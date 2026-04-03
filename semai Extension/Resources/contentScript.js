@@ -20,13 +20,218 @@ function getComposeElement() {
   return null;
 }
 
+function semaiIsVisibleElement(el) {
+  if (!(el instanceof Element)) return false;
+  const rect = el.getBoundingClientRect();
+  const style = window.getComputedStyle(el);
+  return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none";
+}
+
+function semaiWaitForComposeElement(timeoutMs = 6000) {
+  return new Promise((resolve, reject) => {
+    const startedAt = Date.now();
+
+    const check = () => {
+      const composeEl = getComposeElement();
+      if (composeEl) {
+        resolve(composeEl);
+        return;
+      }
+
+      if (Date.now() - startedAt >= timeoutMs) {
+        reject(new Error("Outlook reply box did not open in time."));
+        return;
+      }
+
+      window.setTimeout(check, 120);
+    };
+
+    check();
+  });
+}
+
+function semaiFindReplyAllButton() {
+  const selector = [
+    'button[aria-label*="Reply all" i]',
+    '[role="button"][aria-label*="Reply all" i]',
+    'button[title*="Reply all" i]',
+    '[role="button"][title*="Reply all" i]',
+    '[data-testid*="replyall" i]',
+    '[name*="replyall" i]'
+  ].join(", ");
+
+  const matches = Array.from(document.querySelectorAll(selector)).filter(semaiIsVisibleElement);
+  if (matches.length > 0) return matches[matches.length - 1];
+
+  const textMatches = Array.from(document.querySelectorAll('button, [role="button"]'))
+    .filter(semaiIsVisibleElement)
+    .filter((el) => /reply all/i.test(el.getAttribute("aria-label") || el.textContent || ""));
+
+  return textMatches[textMatches.length - 1] || null;
+}
+
+function semaiFindSendButton() {
+  const selector = [
+    'button[aria-label="Send"]',
+    '[role="button"][aria-label="Send"]',
+    'button[title="Send"]',
+    '[role="button"][title="Send"]',
+    'button[aria-label*="Send" i]:not([aria-haspopup="menu"])',
+    '[role="button"][aria-label*="Send" i]:not([aria-haspopup="menu"])',
+    'button[title*="Send" i]:not([aria-haspopup="menu"])',
+    '[role="button"][title*="Send" i]:not([aria-haspopup="menu"])',
+    '[data-testid*="send" i]',
+    '[name*="send" i]'
+  ].join(", ");
+
+  const matches = Array.from(document.querySelectorAll(selector))
+    .filter(semaiIsVisibleElement)
+    .filter((el) => {
+      const label = el.getAttribute("aria-label") || "";
+      const title = el.getAttribute("title") || "";
+      return !/send to/i.test(label) && !/schedule/i.test(label) && !/schedule/i.test(title);
+    });
+
+  if (matches.length > 0) return matches[matches.length - 1];
+
+  const textMatches = Array.from(document.querySelectorAll('button, [role="button"]'))
+    .filter(semaiIsVisibleElement)
+    .filter((el) => /^send$/i.test((el.getAttribute("aria-label") || el.textContent || "").trim()));
+
+  return textMatches[textMatches.length - 1] || null;
+}
+
+function semaiTriggerComposeSend(composeEl) {
+  composeEl.focus();
+
+  const keyOptions = {
+    key: "Enter",
+    code: "Enter",
+    keyCode: 13,
+    which: 13,
+    bubbles: true,
+    cancelable: true,
+    metaKey: true
+  };
+
+  composeEl.dispatchEvent(new KeyboardEvent("keydown", keyOptions));
+  composeEl.dispatchEvent(new KeyboardEvent("keyup", keyOptions));
+}
+
+async function semaiOpenReplyAllCompose() {
+  let composeEl = getComposeElement();
+  if (composeEl) return composeEl;
+
+  const replyAllBtn = semaiFindReplyAllButton();
+  if (!replyAllBtn) {
+    throw new Error("Reply all button not found in Outlook.");
+  }
+
+  replyAllBtn.click();
+  composeEl = await semaiWaitForComposeElement();
+  return composeEl;
+}
+
+function semaiInsertComposeText(composeEl, text) {
+  composeEl.focus();
+
+  const lines = text.split(/\n/);
+  const fragment = document.createDocumentFragment();
+
+  lines.forEach((line, index) => {
+    const block = document.createElement("div");
+    if (line) {
+      block.textContent = line;
+    } else {
+      block.appendChild(document.createElement("br"));
+    }
+    fragment.appendChild(block);
+
+    if (index === lines.length - 1 && !line) {
+      block.appendChild(document.createElement("br"));
+    }
+  });
+
+  composeEl.innerHTML = "";
+  composeEl.appendChild(fragment);
+  composeEl.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: text }));
+}
+
+async function semaiDraftReplyAllFromChat() {
+  const input = document.getElementById("semai-chat-reply-input");
+  const draftBtn = document.getElementById("semai-chat-reply-draft-btn");
+  const sendBtn = document.getElementById("semai-chat-reply-send-btn");
+  const status = document.getElementById("semai-chat-reply-status");
+  const draft = input?.value.trim() || "";
+
+  if (!draft) {
+    if (status) status.textContent = "Type a reply first.";
+    return;
+  }
+
+  if (draftBtn) draftBtn.disabled = true;
+  if (sendBtn) sendBtn.disabled = true;
+  if (status) status.textContent = "Opening Reply all draft…";
+
+  try {
+    const composeEl = await semaiOpenReplyAllCompose();
+    semaiInsertComposeText(composeEl, draft);
+
+    if (status) status.textContent = "Reply all draft inserted into Outlook.";
+  } catch (err) {
+    if (status) status.textContent = err.message;
+  } finally {
+    if (draftBtn) draftBtn.disabled = false;
+    if (sendBtn) sendBtn.disabled = false;
+  }
+}
+
+async function semaiSendReplyAllFromChat() {
+  const input = document.getElementById("semai-chat-reply-input");
+  const draftBtn = document.getElementById("semai-chat-reply-draft-btn");
+  const sendBtn = document.getElementById("semai-chat-reply-send-btn");
+  const status = document.getElementById("semai-chat-reply-status");
+  const draft = input?.value.trim() || "";
+
+  if (!draft) {
+    if (status) status.textContent = "Type a reply first.";
+    return;
+  }
+
+  if (draftBtn) draftBtn.disabled = true;
+  if (sendBtn) sendBtn.disabled = true;
+  if (status) status.textContent = "Sending Reply all…";
+
+  try {
+    const composeEl = await semaiOpenReplyAllCompose();
+    semaiInsertComposeText(composeEl, draft);
+
+    const sendButton = semaiFindSendButton();
+    if (sendButton) {
+      sendButton.click();
+    } else {
+      semaiTriggerComposeSend(composeEl);
+    }
+
+    if (status) status.textContent = "Reply all sent.";
+    if (input) input.value = "";
+  } catch (err) {
+    if (status) status.textContent = err.message;
+  } finally {
+    if (draftBtn) draftBtn.disabled = false;
+    if (sendBtn) sendBtn.disabled = false;
+  }
+}
+
 const SEMAI_DEBUG = false;
 const SEMAI_CALIBRATION_STORAGE_KEY = "semaiSenderCalibration";
+const SEMAI_PANEL_POSITION_STORAGE_KEY = "semaiPanelPosition";
 
 let semaiSavedSelection = null;
 let semaiCalibrationState = null;
 let semaiCalibrationHoverEl = null;
 let semaiAutoOpenSuppressedSignature = "";
+let semaiPanelDragState = null;
 
 function semaiLog(message, details) {
   if (!SEMAI_DEBUG) {
@@ -219,7 +424,155 @@ function toggleSemaiPanel() {
     );
   }
 
+  window.requestAnimationFrame(() => {
+    semaiEnsurePanelVisible(panel);
+  });
   semaiLog("[semai] Panel toggled", { collapsed: isCollapsed });
+}
+
+function semaiGetSavedPanelPosition() {
+  try {
+    const raw = window.localStorage.getItem(SEMAI_PANEL_POSITION_STORAGE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+function semaiBuildPanelPositionSnapshot(panel) {
+  const rect = panel.getBoundingClientRect();
+  const anchorX = rect.left + rect.width / 2 >= window.innerWidth / 2 ? "right" : "left";
+  const anchorY = rect.top + rect.height / 2 >= window.innerHeight / 2 ? "bottom" : "top";
+
+  return {
+    left: Math.round(rect.left),
+    top: Math.round(rect.top),
+    right: Math.round(window.innerWidth - rect.right),
+    bottom: Math.round(window.innerHeight - rect.bottom),
+    anchorX,
+    anchorY
+  };
+}
+
+function semaiSavePanelPosition(panel) {
+  try {
+    window.localStorage.setItem(
+      SEMAI_PANEL_POSITION_STORAGE_KEY,
+      JSON.stringify(semaiBuildPanelPositionSnapshot(panel))
+    );
+  } catch (e) {
+    console.warn("[semai] Failed to save panel position", e);
+  }
+}
+
+function semaiGetCurrentPanelPosition(panel) {
+  const rect = panel.getBoundingClientRect();
+  const saved = semaiGetSavedPanelPosition();
+  return {
+    left: Math.round(rect.left),
+    top: Math.round(rect.top),
+    right: Math.round(window.innerWidth - rect.right),
+    bottom: Math.round(window.innerHeight - rect.bottom),
+    anchorX: saved?.anchorX === "right" ? "right" : "left",
+    anchorY: saved?.anchorY === "bottom" ? "bottom" : "top"
+  };
+}
+
+function semaiApplyPanelPosition(panel, position) {
+  const width = panel.offsetWidth;
+  const height = panel.offsetHeight;
+  const maxLeft = Math.max(8, window.innerWidth - width - 8);
+  const maxTop = Math.max(8, window.innerHeight - height - 8);
+
+  const anchorX = position?.anchorX === "right" ? "right" : "left";
+  const anchorY = position?.anchorY === "bottom" ? "bottom" : "top";
+
+  const rawLeft = anchorX === "right"
+    ? window.innerWidth - width - (typeof position?.right === "number" ? position.right : 16)
+    : (typeof position?.left === "number" ? position.left : 16);
+  const rawTop = anchorY === "bottom"
+    ? window.innerHeight - height - (typeof position?.bottom === "number" ? position.bottom : 16)
+    : (typeof position?.top === "number" ? position.top : 16);
+
+  const nextLeft = Math.min(Math.max(8, rawLeft), maxLeft);
+  const nextTop = Math.min(Math.max(8, rawTop), maxTop);
+  const nextRight = Math.max(8, window.innerWidth - nextLeft - width);
+  const nextBottom = Math.max(8, window.innerHeight - nextTop - height);
+
+  panel.style.left = anchorX === "left" ? `${nextLeft}px` : "auto";
+  panel.style.right = anchorX === "right" ? `${nextRight}px` : "auto";
+  panel.style.top = anchorY === "top" ? `${nextTop}px` : "auto";
+  panel.style.bottom = anchorY === "bottom" ? `${nextBottom}px` : "auto";
+}
+
+function semaiEnsurePanelVisible(panel, persist = true) {
+  if (!(panel instanceof HTMLElement)) return;
+
+  semaiApplyPanelPosition(panel, semaiGetCurrentPanelPosition(panel));
+
+  if (persist) {
+    semaiSavePanelPosition(panel);
+  }
+}
+
+function semaiRestorePanelPosition(panel) {
+  const saved = semaiGetSavedPanelPosition();
+  if (!saved) return;
+  semaiApplyPanelPosition(panel, saved);
+}
+
+function semaiHandlePanelDragMove(event) {
+  if (!semaiPanelDragState) return;
+
+  const nextLeft = event.clientX - semaiPanelDragState.offsetX;
+  const nextTop = event.clientY - semaiPanelDragState.offsetY;
+  semaiApplyPanelPosition(semaiPanelDragState.panel, {
+    left: nextLeft,
+    top: nextTop,
+    anchorX: "left",
+    anchorY: "top"
+  });
+}
+
+function semaiHandlePanelDragEnd() {
+  if (!semaiPanelDragState) return;
+
+  const panel = semaiPanelDragState.panel;
+  const droppedPosition = semaiBuildPanelPositionSnapshot(panel);
+  semaiApplyPanelPosition(panel, droppedPosition);
+  semaiSavePanelPosition(panel);
+  panel.classList.remove("semai-dragging");
+  semaiPanelDragState = null;
+  document.removeEventListener("pointermove", semaiHandlePanelDragMove);
+  document.removeEventListener("pointerup", semaiHandlePanelDragEnd);
+}
+
+function semaiEnablePanelDragging(panel) {
+  const handle = panel.querySelector(".semai-header");
+  if (!handle) return;
+
+  handle.addEventListener("pointerdown", (event) => {
+    const target = event.target;
+    if (target instanceof Element && target.closest("button, input, textarea")) return;
+
+    const rect = panel.getBoundingClientRect();
+    semaiPanelDragState = {
+      panel,
+      offsetX: event.clientX - rect.left,
+      offsetY: event.clientY - rect.top
+    };
+
+    panel.classList.add("semai-dragging");
+    semaiApplyPanelPosition(panel, {
+      left: rect.left,
+      top: rect.top,
+      anchorX: "left",
+      anchorY: "top"
+    });
+
+    document.addEventListener("pointermove", semaiHandlePanelDragMove);
+    document.addEventListener("pointerup", semaiHandlePanelDragEnd);
+  });
 }
 
 // ===== UI: create floating panel =====
@@ -316,6 +669,11 @@ function createPanel() {
   });
 
   document.body.appendChild(panel);
+  semaiRestorePanelPosition(panel);
+  semaiEnablePanelDragging(panel);
+  window.requestAnimationFrame(() => {
+    semaiEnsurePanelVisible(panel, false);
+  });
   const calibration = semaiGetCalibration();
   semaiUpdateCalibrationStatus(
     calibration?.senderSelector
@@ -1266,6 +1624,45 @@ function semaiCreateChatOverlay(messages, subject) {
   });
 
   overlay.appendChild(scroll);
+
+  const composer = document.createElement("div");
+  composer.className = "semai-chat-composer";
+  composer.innerHTML = `
+    <textarea
+      id="semai-chat-reply-input"
+      class="semai-chat-reply-input"
+      rows="2"
+      placeholder="Type a reply-all draft for the latest message…"
+    ></textarea>
+    <div class="semai-chat-composer-footer">
+      <div id="semai-chat-reply-status" class="semai-chat-reply-status">
+        Reply from here using Outlook's real Reply all flow.
+      </div>
+      <div class="semai-chat-reply-actions">
+        <button id="semai-chat-reply-draft-btn" class="semai-chat-reply-draft-btn" type="button">
+          Draft
+        </button>
+        <button id="semai-chat-reply-send-btn" class="semai-chat-reply-btn" type="button">
+          Reply all
+        </button>
+      </div>
+    </div>
+  `;
+
+  const replyInput = composer.querySelector("#semai-chat-reply-input");
+  const draftBtn = composer.querySelector("#semai-chat-reply-draft-btn");
+  const replyBtn = composer.querySelector("#semai-chat-reply-send-btn");
+
+  draftBtn.addEventListener("click", semaiDraftReplyAllFromChat);
+  replyBtn.addEventListener("click", semaiSendReplyAllFromChat);
+  replyInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+      event.preventDefault();
+      semaiSendReplyAllFromChat();
+    }
+  });
+
+  overlay.appendChild(composer);
   return overlay;
 }
 
@@ -1430,6 +1827,10 @@ function setupWhenReady() {
   semaiGetCurrentUser();
   semaiWatchForNavigation();
   document.addEventListener("selectionchange", semaiSaveSelectionFromCompose);
+  window.addEventListener("resize", () => {
+    const panel = document.getElementById("semai-panel");
+    if (panel) semaiEnsurePanelVisible(panel, false);
+  });
 
   if (!semaiGetCalibration()) {
     window.setTimeout(() => {
