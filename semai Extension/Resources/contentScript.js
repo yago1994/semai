@@ -25,6 +25,8 @@ const SEMAI_CALIBRATION_STORAGE_KEY = "semaiSenderCalibration";
 
 let semaiSavedSelection = null;
 let semaiCalibrationState = null;
+let semaiCalibrationHoverEl = null;
+let semaiAutoOpenSuppressedSignature = "";
 
 function semaiLog(message, details) {
   if (!SEMAI_DEBUG) {
@@ -242,8 +244,8 @@ function createPanel() {
       </button>
     </div>
     <div class="semai-body">
-      <button class="semai-chat-toggle-btn" type="button" style="display:none">💬 Chat view</button>
-      <button class="semai-calibrate-btn" type="button">Calibrate senders</button>
+      <button class="semai-chat-toggle-btn" type="button" style="display:none">Exit chat view</button>
+      <button class="semai-calibrate-btn" type="button">Train sender detection</button>
       <p id="semai-calibration-status" class="semai-calibration-status"></p>
       <p class="semai-subtitle">
         Highlight text in your email and choose how you want it to sound.
@@ -317,8 +319,9 @@ function createPanel() {
   const calibration = semaiGetCalibration();
   semaiUpdateCalibrationStatus(
     calibration?.senderSelector
-      ? "Sender calibration loaded."
-      : "Calibration recommended: click your sender, then another sender."
+      ? "Sender detection is trained for this Outlook layout."
+      : "Quick setup: click your name in a thread, then click another sender.",
+    calibration?.senderSelector ? "success" : "neutral"
   );
   semaiLog("[semai] Panel created");
 }
@@ -641,9 +644,46 @@ function semaiBuildSenderSelector(el) {
   return el.tagName.toLowerCase();
 }
 
-function semaiUpdateCalibrationStatus(message) {
+function semaiUpdateCalibrationStatus(message, tone = "neutral") {
   const status = document.getElementById("semai-calibration-status");
-  if (status) status.textContent = message;
+  if (!status) return;
+  status.textContent = message;
+  status.dataset.tone = tone;
+}
+
+function semaiClearCalibrationHover() {
+  if (semaiCalibrationHoverEl) {
+    semaiCalibrationHoverEl.classList.remove("semai-calibration-target");
+    semaiCalibrationHoverEl = null;
+  }
+}
+
+function semaiFindCalibrationTarget(startEl) {
+  if (!(startEl instanceof Element)) return null;
+
+  const candidate = startEl.closest(
+    '.OZZZK, [data-testid="senderName"], [class*="senderName" i], [class*="sender-name" i], .ms-Persona-primaryText, span, button, div'
+  );
+  if (!candidate) return null;
+
+  const text = (candidate.innerText || candidate.textContent || "").trim();
+  if (!text || text.length > 160) return null;
+  if (!/[A-Za-z]/.test(text)) return null;
+
+  return candidate;
+}
+
+function semaiHandleCalibrationHover(event) {
+  if (!semaiCalibrationState) return;
+
+  const nextTarget = semaiFindCalibrationTarget(event.target);
+  if (nextTarget === semaiCalibrationHoverEl) return;
+
+  semaiClearCalibrationHover();
+  if (nextTarget) {
+    semaiCalibrationHoverEl = nextTarget;
+    semaiCalibrationHoverEl.classList.add("semai-calibration-target");
+  }
 }
 
 function semaiFinishCalibration(selfLabel, otherLabel, selector) {
@@ -660,17 +700,18 @@ function semaiFinishCalibration(selfLabel, otherLabel, selector) {
   semaiCalibrationState = null;
   semaiCurrentUser = null;
   semaiGetCurrentUser();
-  semaiUpdateCalibrationStatus("Sender calibration saved.");
+  semaiClearCalibrationHover();
+  document.body.classList.remove("semai-calibrating");
+  semaiUpdateCalibrationStatus(`Saved. Using "${selfSender.name}" as you.`, "success");
 }
 
 function semaiHandleCalibrationClick(event) {
   if (!semaiCalibrationState) return;
 
-  const target = event.target instanceof Element ? event.target.closest("span, button, div") : null;
+  const target = semaiFindCalibrationTarget(event.target);
   if (!target) return;
 
   const text = (target.innerText || target.textContent || "").trim();
-  if (!text || text.length > 160) return;
 
   event.preventDefault();
   event.stopPropagation();
@@ -679,7 +720,10 @@ function semaiHandleCalibrationClick(event) {
     semaiCalibrationState.selfLabel = text;
     semaiCalibrationState.selector = semaiBuildSenderSelector(target);
     semaiCalibrationState.step = "other";
-    semaiUpdateCalibrationStatus("Click another sender label in the thread.");
+    semaiUpdateCalibrationStatus(
+      `Captured you as "${semaiNormalizeSenderLabel(text).name}". Now click a different sender.`,
+      "other"
+    );
     return;
   }
 
@@ -688,18 +732,23 @@ function semaiHandleCalibrationClick(event) {
     text,
     semaiCalibrationState.selector || semaiBuildSenderSelector(target)
   );
+  document.removeEventListener("mousemove", semaiHandleCalibrationHover, true);
   document.removeEventListener("click", semaiHandleCalibrationClick, true);
 }
 
 function semaiStartCalibration() {
   document.removeEventListener("click", semaiHandleCalibrationClick, true);
+  document.removeEventListener("mousemove", semaiHandleCalibrationHover, true);
+  semaiClearCalibrationHover();
   semaiCalibrationState = {
     step: "self",
     selfLabel: "",
     selector: null
   };
 
-  semaiUpdateCalibrationStatus("Click your sender label in the thread.");
+  document.body.classList.add("semai-calibrating");
+  semaiUpdateCalibrationStatus("Setup step 1 of 2: hover and click your sender label.", "self");
+  document.addEventListener("mousemove", semaiHandleCalibrationHover, true);
   document.addEventListener("click", semaiHandleCalibrationClick, true);
 }
 
@@ -1304,6 +1353,8 @@ function semaiDeactivateChatView() {
   const overlay = document.getElementById("semai-chat-overlay");
   if (overlay) overlay.remove();
   semaiChatViewActive = false;
+  const bodies = document.querySelectorAll('[aria-label="Message body"]:not([contenteditable])');
+  semaiAutoOpenSuppressedSignature = Array.from(bodies).map(b => b.dataset.semaiSigStripped || "").join("|");
   semaiUpdateChatToggleBtn();
   semaiLog("[semai] Chat view deactivated");
 }
@@ -1311,7 +1362,7 @@ function semaiDeactivateChatView() {
 function semaiUpdateChatToggleBtn() {
   const btn = document.querySelector(".semai-chat-toggle-btn");
   if (!btn) return;
-  btn.textContent = semaiChatViewActive ? "✕ Exit chat view" : "💬 Chat view";
+  btn.textContent = semaiChatViewActive ? "Hide chat view" : "Show chat view";
 }
 
 // Show/hide the chat toggle based on whether we're looking at a thread
@@ -1331,8 +1382,20 @@ function semaiWatchForNavigation() {
     if (semaiChatViewActive && sig !== semaiLastReadingPaneSignature) {
       semaiDeactivateChatView();
     }
+    if (sig !== semaiLastReadingPaneSignature) {
+      semaiAutoOpenSuppressedSignature = "";
+    }
     semaiLastReadingPaneSignature = sig;
     semaiUpdateChatToggleVisibility();
+    if (
+      !semaiChatViewActive &&
+      !semaiCalibrationState &&
+      bodies.length >= 2 &&
+      sig &&
+      sig !== semaiAutoOpenSuppressedSignature
+    ) {
+      semaiActivateChatView();
+    }
   };
 
   const obs = new MutationObserver(check);
