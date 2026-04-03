@@ -1,0 +1,235 @@
+/* Container */
+#semai-panel {
+  position: fixed;
+  bottom: 16px;
+  right: 16px;
+  z-index: 999999;
+  background: rgba(255, 255, 255, 0.94);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-radius: 14px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.18);
+  padding: 10px 12px 12px;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Text",
+    "Segoe UI", sans-serif;
+  font-size: 12px;
+  max-width: 260px;
+  transition: padding 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
+}
+
+/* Collapsed state */
+#semai-panel.semai-collapsed {
+  padding: 8px 10px;
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.16);
+  cursor: default;
+}
+
+#semai-panel.semai-collapsed .semai-body {
+  display: none;
+}
+
+/* Header */
+.semai-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.semai-header-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.semai-logo-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #6366f1, #a855f7);
+  box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.15);
+}
+
+.semai-title {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: #0f172a;
+}
+
+/* Collapse/expand button */
+.semai-toggle-btn {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 11px;
+  padding: 2px 4px;
+  border-radius: 999px;
+  color: #6b7280;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.semai-toggle-btn:hover {
+  background: rgba(148, 163, 184, 0.16);
+  color: #374151;
+}
+
+/* Subtitle */
+.semai-subtitle {
+  margin: 0;
+  margin-bottom: 6px;
+  font-size: 11px;
+  color: #6b7280;
+}
+
+/* Body wrapper */
+.semai-body {
+  display: block;
+}
+
+/* Chips / buttons row */
+.semai-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.semai-chip {
+  flex: 0 0 auto;
+  padding: 4px 9px;
+  border-radius: 999px;
+  border: 1px solid rgba(148, 163, 184, 0.8);
+  background: rgba(248, 250, 252, 0.96);
+  cursor: pointer;
+  font-size: 11px;
+  color: #0f172a;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  transition: background 0.15s ease, transform 0.08s ease,
+    box-shadow 0.15s ease, border-color 0.15s ease;
+}
+
+.semai-chip span {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #6b7280;
+}
+
+.semai-chip:hover {
+  background: #eef2ff;
+  border-color: #6366f1;
+  box-shadow: 0 0 0 1px rgba(79, 70, 229, 0.25);
+  transform: translateY(-0.5px);
+}
+
+.semai-chip:active {
+  transform: translateY(0);
+  box-shadow: none;
+}
+
+/* Custom input */
+#semai-custom-input {
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: 2px;
+  padding: 5px 8px;
+  font-size: 11px;
+  border-radius: 9px;
+  border: 1px solid rgba(148, 163, 184, 0.9);
+  outline: none;
+  background: rgba(248, 250, 252, 0.9);
+  color: #0f172a;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease,
+    background 0.15s ease;
+}
+
+#semai-custom-input::placeholder {
+  color: #9ca3af;
+}
+
+#semai-custom-input:focus {
+  border-color: #6366f1;
+  box-shadow: 0 0 0 1px rgba(79, 70, 229, 0.35);
+  background: #ffffff;
+}
+
+/* Footer button */
+.semai-footer {
+  margin-top: 6px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.semai-apply-btn {
+  padding: 5px 10px;
+  border-radius: 999px;
+  border: none;
+  background: linear-gradient(135deg, #6366f1, #a855f7);
+  color: white;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  box-shadow: 0 8px 18px rgba(79, 70, 229, 0.4);
+  transition: transform 0.08s ease, box-shadow 0.15s ease,
+    filter 0.15s ease;
+}
+
+.semai-apply-btn:hover {
+  filter: brightness(1.05);
+  box-shadow: 0 10px 24px rgba(79, 70, 229, 0.45);
+}
+
+.semai-apply-btn:active {
+  transform: translateY(1px);
+  box-shadow: 0 5px 12px rgba(79, 70, 229, 0.35);
+}
+
+.semai-apply-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+  box-shadow: none;
+}
+
+/* Working / loading state */
+#semai-panel.semai-working .semai-chip {
+  opacity: 0.45;
+  cursor: default;
+}
+
+#semai-panel.semai-working .semai-apply-btn {
+  background: linear-gradient(135deg, #818cf8, #c084fc);
+  box-shadow: none;
+  cursor: default;
+}
+
+/* Inline signature toggle (injected into reading view) */
+.semai-sig-toggle {
+  display: inline-block;
+  margin: 4px 0;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: #6366f1;
+  background: rgba(99, 102, 241, 0.07);
+  border: 1px solid rgba(99, 102, 241, 0.25);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.semai-sig-toggle:hover {
+  background: rgba(99, 102, 241, 0.14);
+  border-color: rgba(99, 102, 241, 0.45);
+}

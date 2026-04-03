@@ -1,33 +1,30 @@
 {
-    "manifest_version": 3,
-    "default_locale": "en",
-
-    "name": "__MSG_extension_name__",
-    "description": "__MSG_extension_description__",
-    "version": "1.0",
-
-    "icons": {
-        "48": "images/icon-48.png",
-        "96": "images/icon-96.png",
-        "128": "images/icon-128.png",
-        "256": "images/icon-256.png",
-        "512": "images/icon-512.png"
-    },
-
-    "background": {
-        "scripts": [ "background.js" ],
-        "type": "module"
-    },
-
-    "content_scripts": [{
-        "js": [ "content.js" ],
-        "matches": [ "*://example.com/*" ]
-    }],
-
-    "action": {
-        "default_popup": "popup.html",
-        "default_icon": "images/toolbar-icon.svg"
-    },
-
-    "permissions": [ ]
+  "manifest_version": 3,
+  "name": "semai",
+  "version": "0.1",
+  "description": "Rewrite Outlook Web emails in-place using an AI backend.",
+  "icons": {
+    "48": "images/icon-48.png",
+    "128": "images/icon-128.png"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://outlook.office.com/*",
+        "https://outlook.live.com/*",
+        "https://outlook.office365.com/*",
+        "https://outlook.cloud.microsoft/*"
+      ],
+      "js": ["secrets.js", "semaiConfig.js", "contentScript.js"],
+      "css": ["styles.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "host_permissions": [
+    "https://outlook.office.com/*",
+    "https://outlook.live.com/*",
+    "https://outlook.office365.com/*",
+    "https://outlook.cloud.microsoft/*",
+    "https://api.openai.com/*"
+  ]
 }
