@@ -1220,23 +1220,41 @@ function semaiCreateChatOverlay(messages, subject) {
   return overlay;
 }
 
-// Find the Outlook reading pane container (scrollable ancestor of message bodies)
+function semaiIsLargePaneCandidate(el) {
+  if (!(el instanceof Element)) return false;
+  const rect = el.getBoundingClientRect();
+  return rect.width >= 420 && rect.height >= 320;
+}
+
+// Find the Outlook reading pane container and prefer the broadest reader surface.
 function semaiGetReadingPane() {
   const firstBody = document.querySelector('[aria-label="Message body"]:not([contenteditable])');
   if (!firstBody) return null;
 
+  const priorityPane =
+    firstBody.closest('[role="main"]') ||
+    firstBody.closest('[role="complementary"]') ||
+    firstBody.closest('[data-app-section-name]');
+
+  if (priorityPane && semaiIsLargePaneCandidate(priorityPane)) {
+    return priorityPane;
+  }
+
+  let bestPane = null;
   let el = firstBody.parentElement;
   for (let d = 0; d < 25 && el; d++, el = el.parentElement) {
     if (el === document.body || el === document.documentElement) break;
+    if (!semaiIsLargePaneCandidate(el)) continue;
+
+    bestPane = el;
     const style = window.getComputedStyle(el);
     const overflow = style.overflowY;
     if ((overflow === "auto" || overflow === "scroll") && el.clientHeight > 200) {
-      return el;
+      return bestPane;
     }
   }
-  // Fallback: role="main" or the complementary region
-  return document.querySelector('[role="main"]') ||
-    document.querySelector('[role="complementary"]') || null;
+
+  return bestPane || null;
 }
 
 function semaiActivateChatView() {
@@ -1264,6 +1282,7 @@ function semaiActivateChatView() {
     if (rpStyle.position === "static") readingPane.style.position = "relative";
     readingPane.appendChild(overlay);
   } else {
+    overlay.classList.add("semai-chat-overlay-fixed");
     document.body.appendChild(overlay);
   }
 
