@@ -1409,25 +1409,8 @@ function semaiCleanBodyClone(bodyEl, senderFirstName) {
     '[id*="signature" i], [class*="signature" i]'
   ).forEach(el => el.remove());
 
-  // ── 4. Remove "From:/Sent:/To:" quoted-reply text blocks ──
-  const walker = document.createTreeWalker(clone, NodeFilter.SHOW_TEXT);
-  let textNode;
-  while ((textNode = walker.nextNode())) {
-    if (/^from:\s/im.test(textNode.textContent)) {
-      let block = textNode.parentElement;
-      while (block && block !== clone && !SEMAI_BLOCK_TAGS.has(block.tagName)) {
-        block = block.parentElement;
-      }
-      if (block && block !== clone) {
-        const blockText = (block.innerText || "").trim();
-        if (/^from:\s/im.test(blockText) && /sent:\s/im.test(blockText)) {
-          let sib = block;
-          while (sib) { const next = sib.nextElementSibling; sib.remove(); sib = next; }
-          break;
-        }
-      }
-    }
-  }
+  // ── 4. Remove quoted-reply header blocks like From / Date / Sent / To / Subject ──
+  semaiStripQuotedReplyHeaders(clone);
 
   // ── 5. Strip separator lines (-- , ____ , <hr>) and everything after ──
   function removeFromAndAfter(el) {
@@ -1463,6 +1446,78 @@ function semaiCleanBodyClone(bodyEl, senderFirstName) {
   }
 
   return clone.innerHTML.trim();
+}
+
+function semaiStripQuotedReplyHeaders(container) {
+  const HEADER_LINE_RE = /^(from|date|sent|to|cc|subject)\s*:/i;
+  const HEADER_PAIR_RE = /(from|date|sent|to|cc|subject)\s*:.*\n.*(from|date|sent|to|cc|subject)\s*:/is;
+  const WROTE_LINE_RE = /^on .+wrote:\s*$/i;
+
+  function removeFromAndAfter(el) {
+    let sib = el;
+    while (sib) {
+      const next = sib.nextElementSibling;
+      sib.remove();
+      sib = next;
+    }
+  }
+
+  const blocks = Array.from(container.querySelectorAll("div, p, blockquote, section, article, td"));
+  for (const block of blocks) {
+    const blockText = (block.innerText || block.textContent || "").trim();
+    if (!blockText) continue;
+
+    const lines = blockText.split(/\n+/).map((line) => line.trim()).filter(Boolean);
+    const headerLines = lines.filter((line) => HEADER_LINE_RE.test(line));
+
+    if (headerLines.length >= 2 || HEADER_PAIR_RE.test(blockText)) {
+      removeFromAndAfter(block);
+      return;
+    }
+
+    if (WROTE_LINE_RE.test(blockText)) {
+      removeFromAndAfter(block);
+      return;
+    }
+  }
+
+  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+  let textNode;
+  while ((textNode = walker.nextNode())) {
+    const text = (textNode.textContent || "").trim();
+    if (!HEADER_LINE_RE.test(text) && !WROTE_LINE_RE.test(text)) continue;
+
+    let block = textNode.parentElement;
+    while (block && block !== container && !SEMAI_BLOCK_TAGS.has(block.tagName)) {
+      block = block.parentElement;
+    }
+    if (!block || block === container) continue;
+
+    const blockText = (block.innerText || block.textContent || "").trim();
+    const lines = blockText.split(/\n+/).map((line) => line.trim()).filter(Boolean);
+    const headerLines = lines.filter((line) => HEADER_LINE_RE.test(line));
+    if (headerLines.length >= 1 || lines.some((line) => WROTE_LINE_RE.test(line))) {
+      removeFromAndAfter(block);
+      return;
+    }
+  }
+
+  const quoteBlocks = Array.from(container.querySelectorAll("blockquote"));
+  for (const quoteBlock of quoteBlocks) {
+    const previous = quoteBlock.previousElementSibling;
+    const previousText = (previous?.innerText || previous?.textContent || "").trim();
+    if (previous && WROTE_LINE_RE.test(previousText)) {
+      previous.remove();
+      quoteBlock.remove();
+      return;
+    }
+
+    const parentText = (quoteBlock.parentElement?.innerText || "").trim();
+    if (WROTE_LINE_RE.test(parentText.split(/\n+/)[0] || "")) {
+      quoteBlock.parentElement?.remove();
+      return;
+    }
+  }
 }
 
 // Remove a trailing "Best,\nName" or "Thanks,\nName" if it's the last
