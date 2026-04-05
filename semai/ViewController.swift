@@ -1,6 +1,6 @@
 //
 //  ViewController.swift
-//  semai
+//  remou
 //
 //  Created by Yago Arconada on 11/13/25.
 //
@@ -9,7 +9,7 @@ import Cocoa
 import SafariServices
 import WebKit
 
-let extensionBundleIdentifier = "yam.team.semai.Extension"
+let extensionBundleIdentifier = "yam.team.remou.Extension"
 
 class ViewController: NSViewController, WKNavigationDelegate, WKScriptMessageHandler {
 

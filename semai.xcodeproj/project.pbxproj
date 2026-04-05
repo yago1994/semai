@@ -7,7 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		D4CFC3052EC6EB280092F9EE /* semai Extension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = D4CFC3042EC6EB280092F9EE /* semai Extension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		D4CFC3052EC6EB280092F9EE /* remou Extension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = D4CFC3042EC6EB280092F9EE /* remou Extension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -16,7 +16,7 @@
 			containerPortal = D4CFC2E22EC6EB270092F9EE /* Project object */;
 			proxyType = 1;
 			remoteGlobalIDString = D4CFC3032EC6EB280092F9EE;
-			remoteInfo = "semai Extension";
+			remoteInfo = "remou Extension";
 		};
 /* End PBXContainerItemProxy section */
 
@@ -27,7 +27,7 @@
 			dstPath = "";
 			dstSubfolderSpec = 13;
 			files = (
-				D4CFC3052EC6EB280092F9EE /* semai Extension.appex in Embed Foundation Extensions */,
+				D4CFC3052EC6EB280092F9EE /* remou Extension.appex in Embed Foundation Extensions */,
 			);
 			name = "Embed Foundation Extensions";
 			runOnlyForDeploymentPostprocessing = 0;
@@ -35,12 +35,12 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
-		D4CFC2EA2EC6EB270092F9EE /* semai.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = semai.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		D4CFC3042EC6EB280092F9EE /* semai Extension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = "semai Extension.appex"; sourceTree = BUILT_PRODUCTS_DIR; };
+		D4CFC2EA2EC6EB270092F9EE /* remou.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = remou.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		D4CFC3042EC6EB280092F9EE /* remou Extension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = "remou Extension.appex"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
-		D4CFC31D2EC6EB280092F9EE /* Exceptions for "semai Extension" folder in "semai Extension" target */ = {
+		D4CFC31D2EC6EB280092F9EE /* Exceptions for "remou Extension" folder in "remou Extension" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Info.plist,
@@ -58,7 +58,7 @@
 		D4CFC3082EC6EB280092F9EE /* semai Extension */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
-				D4CFC31D2EC6EB280092F9EE /* Exceptions for "semai Extension" folder in "semai Extension" target */,
+				D4CFC31D2EC6EB280092F9EE /* Exceptions for "remou Extension" folder in "remou Extension" target */,
 			);
 			explicitFolders = (
 				Resources/_locales,
@@ -99,8 +99,8 @@
 		D4CFC2EB2EC6EB270092F9EE /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				D4CFC2EA2EC6EB270092F9EE /* semai.app */,
-				D4CFC3042EC6EB280092F9EE /* semai Extension.appex */,
+				D4CFC2EA2EC6EB270092F9EE /* remou.app */,
+				D4CFC3042EC6EB280092F9EE /* remou Extension.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -110,7 +110,7 @@
 /* Begin PBXNativeTarget section */
 		D4CFC2E92EC6EB270092F9EE /* semai */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = D4CFC3242EC6EB280092F9EE /* Build configuration list for PBXNativeTarget "semai" */;
+			buildConfigurationList = D4CFC3242EC6EB280092F9EE /* Build configuration list for PBXNativeTarget "remou" */;
 			buildPhases = (
 				D4CFC2E62EC6EB270092F9EE /* Sources */,
 				D4CFC2E72EC6EB270092F9EE /* Frameworks */,
@@ -125,16 +125,16 @@
 			fileSystemSynchronizedGroups = (
 				D4CFC2EC2EC6EB270092F9EE /* semai */,
 			);
-			name = semai;
+			name = remou;
 			packageProductDependencies = (
 			);
-			productName = semai;
-			productReference = D4CFC2EA2EC6EB270092F9EE /* semai.app */;
+			productName = remou;
+			productReference = D4CFC2EA2EC6EB270092F9EE /* remou.app */;
 			productType = "com.apple.product-type.application";
 		};
 		D4CFC3032EC6EB280092F9EE /* semai Extension */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = D4CFC31E2EC6EB280092F9EE /* Build configuration list for PBXNativeTarget "semai Extension" */;
+			buildConfigurationList = D4CFC31E2EC6EB280092F9EE /* Build configuration list for PBXNativeTarget "remou Extension" */;
 			buildPhases = (
 				D4CFC3002EC6EB280092F9EE /* Sources */,
 				D4CFC3012EC6EB280092F9EE /* Frameworks */,
@@ -147,11 +147,11 @@
 			fileSystemSynchronizedGroups = (
 				D4CFC3082EC6EB280092F9EE /* semai Extension */,
 			);
-			name = "semai Extension";
+			name = "remou Extension";
 			packageProductDependencies = (
 			);
-			productName = "semai Extension";
-			productReference = D4CFC3042EC6EB280092F9EE /* semai Extension.appex */;
+			productName = "remou Extension";
+			productReference = D4CFC3042EC6EB280092F9EE /* remou Extension.appex */;
 			productType = "com.apple.product-type.app-extension";
 		};
 /* End PBXNativeTarget section */
@@ -172,7 +172,7 @@
 					};
 				};
 			};
-			buildConfigurationList = D4CFC2E52EC6EB270092F9EE /* Build configuration list for PBXProject "semai" */;
+			buildConfigurationList = D4CFC2E52EC6EB270092F9EE /* Build configuration list for PBXProject "remou" */;
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
@@ -246,7 +246,7 @@
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "semai Extension/Info.plist";
-				INFOPLIST_KEY_CFBundleDisplayName = "semai Extension";
+				INFOPLIST_KEY_CFBundleDisplayName = "remou Extension";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -259,7 +259,7 @@
 					"-framework",
 					SafariServices,
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = yam.team.semai.Extension;
+				PRODUCT_BUNDLE_IDENTIFIER = yam.team.remou.Extension;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -281,7 +281,7 @@
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "semai Extension/Info.plist";
-				INFOPLIST_KEY_CFBundleDisplayName = "semai Extension";
+				INFOPLIST_KEY_CFBundleDisplayName = "remou Extension";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -294,7 +294,7 @@
 					"-framework",
 					SafariServices,
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = yam.team.semai.Extension;
+				PRODUCT_BUNDLE_IDENTIFIER = yam.team.remou.Extension;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -439,7 +439,7 @@
 				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = semai;
+				INFOPLIST_KEY_CFBundleDisplayName = remou;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INFOPLIST_KEY_NSMainStoryboardFile = Main;
 				INFOPLIST_KEY_NSPrincipalClass = NSApplication;
@@ -454,7 +454,7 @@
 					"-framework",
 					WebKit,
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = yam.team.semai;
+				PRODUCT_BUNDLE_IDENTIFIER = yam.team.remou;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -480,7 +480,7 @@
 				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = semai;
+				INFOPLIST_KEY_CFBundleDisplayName = remou;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INFOPLIST_KEY_NSMainStoryboardFile = Main;
 				INFOPLIST_KEY_NSPrincipalClass = NSApplication;
@@ -495,7 +495,7 @@
 					"-framework",
 					WebKit,
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = yam.team.semai;
+				PRODUCT_BUNDLE_IDENTIFIER = yam.team.remou;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -510,7 +510,7 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		D4CFC2E52EC6EB270092F9EE /* Build configuration list for PBXProject "semai" */ = {
+		D4CFC2E52EC6EB270092F9EE /* Build configuration list for PBXProject "remou" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				D4CFC3212EC6EB280092F9EE /* Debug */,
@@ -519,7 +519,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		D4CFC31E2EC6EB280092F9EE /* Build configuration list for PBXNativeTarget "semai Extension" */ = {
+		D4CFC31E2EC6EB280092F9EE /* Build configuration list for PBXNativeTarget "remou Extension" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				D4CFC31F2EC6EB280092F9EE /* Debug */,
@@ -528,7 +528,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		D4CFC3242EC6EB280092F9EE /* Build configuration list for PBXNativeTarget "semai" */ = {
+		D4CFC3242EC6EB280092F9EE /* Build configuration list for PBXNativeTarget "remou" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				D4CFC3252EC6EB280092F9EE /* Debug */,

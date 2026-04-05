@@ -224,6 +224,7 @@ async function semaiSendReplyAllFromChat() {
 }
 
 const SEMAI_DEBUG = false;
+const SEMAI_AI_AGENT_ENABLED = false;
 const SEMAI_CALIBRATION_STORAGE_KEY = "semaiSenderCalibration";
 const SEMAI_PANEL_POSITION_STORAGE_KEY = "semaiPanelPosition";
 
@@ -293,6 +294,10 @@ function semaiGetSelectionForRewrite(bodyEl) {
 
 // ===== OpenAI API call =====
 async function semaiCallOpenAI(text, mode, customInstruction) {
+  if (!SEMAI_AI_AGENT_ENABLED) {
+    throw new Error("AI rewrite is disabled for now.");
+  }
+
   if (!SEMAI_OPENAI_API_KEY) {
     throw new Error("No API key — paste your key into secrets.js first.");
   }
@@ -600,6 +605,7 @@ function createPanel() {
       <button class="semai-chat-toggle-btn" type="button" style="display:none">Exit chat view</button>
       <button class="semai-calibrate-btn" type="button">Train sender detection</button>
       <p id="semai-calibration-status" class="semai-calibration-status"></p>
+      ${SEMAI_AI_AGENT_ENABLED ? `
       <p class="semai-subtitle">
         Highlight text in your email and choose how you want it to sound.
       </p>
@@ -623,6 +629,7 @@ function createPanel() {
           Apply custom instruction
         </button>
       </div>
+      ` : ""}
     </div>
   `;
 
@@ -653,6 +660,8 @@ function createPanel() {
 
     const mode = target.dataset.mode;
     if (!mode) return;
+
+    if (!SEMAI_AI_AGENT_ENABLED) return;
 
     console.log("[semai] Button clicked", { mode });
 

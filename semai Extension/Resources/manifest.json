@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "semai",
+  "name": "remou",
   "version": "0.1",
   "description": "Rewrite Outlook Web emails in-place using an AI backend.",
   "icons": {
