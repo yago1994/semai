@@ -336,6 +336,11 @@ body.semai-calibrating * {
   inset: 0;
 }
 
+#semai-chat-overlay[data-view-mode="real"] {
+  background: transparent;
+  pointer-events: none;
+}
+
 /* Header */
 .semai-chat-header {
   display: flex;
@@ -377,14 +382,34 @@ body.semai-calibrating * {
   background: rgba(239, 68, 68, 0.18);
 }
 
+#semai-chat-overlay[data-view-mode="real"] .semai-chat-header,
+#semai-chat-overlay[data-view-mode="real"] .semai-chat-composer {
+  pointer-events: auto;
+}
+
 /* Scrollable message area */
-.semai-chat-scroll {
+.semai-chat-content {
   flex: 1;
+  min-height: 0;
+  position: relative;
+}
+
+.semai-chat-scroll {
+  height: 100%;
   overflow-y: auto;
-  padding: 16px;
+  padding: 16px 16px 160px;
   display: flex;
   flex-direction: column;
   gap: 4px;
+}
+
+#semai-chat-overlay[data-view-mode="real"] .semai-chat-scroll {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+#semai-chat-overlay[data-view-mode="real"] .semai-chat-content {
+  background: transparent;
 }
 
 /* Message row */
@@ -517,6 +542,62 @@ body.semai-calibrating * {
   gap: 8px;
 }
 
+.semai-chat-view-toggle-btn {
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  border-radius: 999px;
+  background: #ffffff;
+  color: #475569;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.semai-chat-view-toggle-btn:hover {
+  background: rgba(99, 102, 241, 0.08);
+  border-color: rgba(99, 102, 241, 0.35);
+  color: #4f46e5;
+}
+
+.semai-chat-view-toggle-btn.semai-chat-view-toggle-active {
+  background: rgba(99, 102, 241, 0.12);
+  border-color: rgba(99, 102, 241, 0.42);
+  color: #4338ca;
+}
+
+.semai-chat-view-toggle-icon {
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+
+.semai-chat-view-toggle-icon svg {
+  width: 16px;
+  height: 16px;
+  display: block;
+  fill: currentColor;
+}
+
+.semai-chat-view-toggle-btn .semai-eye-slash {
+  display: none;
+}
+
+.semai-chat-view-toggle-btn.semai-chat-view-toggle-active .semai-eye-slash {
+  display: block;
+}
+
+.semai-reading-pane-spacer {
+  width: 100%;
+  pointer-events: none;
+  flex-shrink: 0;
+}
+
 .semai-chat-reply-draft-btn {
   border: 1px solid rgba(148, 163, 184, 0.35);
   border-radius: 999px;
@@ -542,9 +623,16 @@ body.semai-calibrating * {
   box-shadow: 0 6px 14px rgba(37, 99, 235, 0.22);
 }
 
+.semai-chat-view-toggle-btn:disabled,
 .semai-chat-reply-draft-btn:disabled,
 .semai-chat-reply-btn:disabled {
   opacity: 0.6;
   cursor: default;
   box-shadow: none;
+}
+
+.semai-reading-pane-spacer {
+  width: 100%;
+  pointer-events: none;
+  flex-shrink: 0;
 }

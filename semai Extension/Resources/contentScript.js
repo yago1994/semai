@@ -602,7 +602,7 @@ function createPanel() {
       </button>
     </div>
     <div class="semai-body">
-      <button class="semai-chat-toggle-btn" type="button" style="display:none">Exit chat view</button>
+      <button class="semai-chat-toggle-btn" type="button" style="display:none">Turn on chat view</button>
       <button class="semai-calibrate-btn" type="button">Train sender detection</button>
       <p id="semai-calibration-status" class="semai-calibration-status"></p>
       ${SEMAI_AI_AGENT_ENABLED ? `
@@ -1661,8 +1661,9 @@ function semaiExtractThreadMessages() {
     const timestamp = semaiGetMessageTimestamp(bodyEl);
     const senderFirstName = (sender.name.split(/\s+/)[0] || "").toLowerCase();
     const cleanHtml = semaiCleanBodyClone(bodyEl, senderFirstName);
+    const rawHtml = bodyEl.dataset.semaiOriginalHtml || bodyEl.innerHTML;
     const isMe = semaiIsCurrentUser(sender.name, sender.email);
-    return { sender, timestamp, cleanHtml, isMe };
+    return { sender, timestamp, cleanHtml, rawHtml, isMe };
   });
 }
 
@@ -1688,20 +1689,24 @@ function semaiGetThreadSubject() {
 function semaiCreateChatOverlay(messages, subject) {
   const overlay = document.createElement("div");
   overlay.id = "semai-chat-overlay";
+  overlay.dataset.viewMode = "chat";
 
   // Header bar
   const header = document.createElement("div");
   header.className = "semai-chat-header";
   header.innerHTML = `
     <span class="semai-chat-subject">${subject.replace(/</g, "&lt;")}</span>
-    <button class="semai-chat-close" type="button">✕ Exit chat view</button>
+    <button class="semai-chat-close" type="button">✕ Hide chat view</button>
   `;
   header.querySelector(".semai-chat-close").addEventListener("click", semaiDeactivateChatView);
   overlay.appendChild(header);
 
-  // Scrollable message area
-  const scroll = document.createElement("div");
-  scroll.className = "semai-chat-scroll";
+  const content = document.createElement("div");
+  content.className = "semai-chat-content";
+
+  // Scrollable chat message area
+  const chatScroll = document.createElement("div");
+  chatScroll.className = "semai-chat-scroll";
 
   messages.forEach((msg) => {
     if (!msg.cleanHtml) return; // skip empty bodies
@@ -1731,10 +1736,11 @@ function semaiCreateChatOverlay(messages, subject) {
       row.appendChild(avatar);
       row.appendChild(bubble);
     }
-    scroll.appendChild(row);
+    chatScroll.appendChild(row);
   });
 
-  overlay.appendChild(scroll);
+  content.appendChild(chatScroll);
+  overlay.appendChild(content);
 
   const composer = document.createElement("div");
   composer.className = "semai-chat-composer";
@@ -1747,9 +1753,23 @@ function semaiCreateChatOverlay(messages, subject) {
     ></textarea>
     <div class="semai-chat-composer-footer">
       <div id="semai-chat-reply-status" class="semai-chat-reply-status">
-        Reply from here using Outlook's real Reply all flow.
+        Chat view is on. Use the eye button to switch only the thread view above this reply box.
       </div>
       <div class="semai-chat-reply-actions">
+        <button
+          id="semai-chat-view-toggle-btn"
+          class="semai-chat-view-toggle-btn"
+          type="button"
+          aria-label="Show real thread above the reply box"
+          title="Show real thread above the reply box"
+        >
+          <span class="semai-chat-view-toggle-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" focusable="false">
+              <path class="semai-eye-shape" d="M12 5C6.5 5 2.1 8.4 1 12c1.1 3.6 5.5 7 11 7s9.9-3.4 11-7c-1.1-3.6-5.5-7-11-7Zm0 11.2A4.2 4.2 0 1 1 12 7.8a4.2 4.2 0 0 1 0 8.4Zm0-2.1a2.1 2.1 0 1 0 0-4.2 2.1 2.1 0 0 0 0 4.2Z"></path>
+              <path class="semai-eye-slash" d="M5.1 3.7 20.3 18.9l-1.4 1.4L3.7 5.1l1.4-1.4Z"></path>
+            </svg>
+          </span>
+        </button>
         <button id="semai-chat-reply-draft-btn" class="semai-chat-reply-draft-btn" type="button">
           Draft
         </button>
@@ -1761,11 +1781,20 @@ function semaiCreateChatOverlay(messages, subject) {
   `;
 
   const replyInput = composer.querySelector("#semai-chat-reply-input");
+  const viewToggleBtn = composer.querySelector("#semai-chat-view-toggle-btn");
   const draftBtn = composer.querySelector("#semai-chat-reply-draft-btn");
   const replyBtn = composer.querySelector("#semai-chat-reply-send-btn");
 
+  viewToggleBtn.addEventListener("click", () => {
+    semaiToggleOverlayView(overlay);
+  });
   draftBtn.addEventListener("click", semaiDraftReplyAllFromChat);
   replyBtn.addEventListener("click", semaiSendReplyAllFromChat);
+  replyInput.addEventListener("input", () => {
+    if (overlay._semaiReadingPane) {
+      requestAnimationFrame(() => semaiUpdateReadingPaneBottomClearance(overlay._semaiReadingPane, overlay));
+    }
+  });
   replyInput.addEventListener("keydown", (event) => {
     if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
       event.preventDefault();
@@ -1774,7 +1803,65 @@ function semaiCreateChatOverlay(messages, subject) {
   });
 
   overlay.appendChild(composer);
+  semaiUpdateOverlayViewToggle(overlay);
   return overlay;
+}
+
+function semaiUpdateOverlayViewToggle(overlay) {
+  const toggleBtn = overlay.querySelector("#semai-chat-view-toggle-btn");
+  const status = overlay.querySelector("#semai-chat-reply-status");
+  if (!toggleBtn) return;
+
+  const isChatView = overlay.dataset.viewMode !== "real";
+  toggleBtn.classList.toggle("semai-chat-view-toggle-active", !isChatView);
+  toggleBtn.classList.toggle("semai-chat-view-toggle-chat", isChatView);
+  toggleBtn.setAttribute("aria-label", isChatView ? "Show real thread above the reply box" : "Show chat thread above the reply box");
+  toggleBtn.setAttribute("title", isChatView ? "Show real thread above the reply box" : "Show chat thread above the reply box");
+
+  if (status) {
+    status.textContent = isChatView
+      ? "Chat view is on. Use the eye button to switch only the thread view above this reply box."
+      : "The original Outlook thread is visible above the reply box. Use the eye button to switch back to chat bubbles.";
+  }
+
+  if (overlay._semaiReadingPane) {
+    semaiUpdateReadingPaneBottomClearance(overlay._semaiReadingPane, overlay);
+  }
+}
+
+function semaiToggleOverlayView(overlay) {
+  if (!overlay) return;
+
+  overlay.dataset.viewMode = overlay.dataset.viewMode === "real" ? "chat" : "real";
+  semaiUpdateOverlayViewToggle(overlay);
+}
+
+function semaiUpdateReadingPaneBottomClearance(readingPane, overlay) {
+  if (!readingPane || !overlay) return;
+
+  let spacer = readingPane.querySelector(":scope > .semai-reading-pane-spacer");
+  if (!spacer) {
+    spacer = document.createElement("div");
+    spacer.className = "semai-reading-pane-spacer";
+    readingPane.appendChild(spacer);
+  }
+
+  const composer = overlay.querySelector(".semai-chat-composer");
+  const header = overlay.querySelector(".semai-chat-header");
+  const composerHeight = composer?.getBoundingClientRect().height || 0;
+  const headerHeight = header?.getBoundingClientRect().height || 0;
+  const isRealView = overlay.dataset.viewMode === "real";
+  if (isRealView) {
+    spacer.style.height = "20px";
+    return;
+  }
+
+  const extraClearance = 320;
+  spacer.style.height = `${Math.ceil(composerHeight + headerHeight + extraClearance)}px`;
+}
+
+function semaiRemoveReadingPaneBottomClearance(readingPane) {
+  readingPane?.querySelector(":scope > .semai-reading-pane-spacer")?.remove();
 }
 
 function semaiIsLargePaneCandidate(el) {
@@ -1838,6 +1925,18 @@ function semaiActivateChatView() {
     const rpStyle = window.getComputedStyle(readingPane);
     if (rpStyle.position === "static") readingPane.style.position = "relative";
     readingPane.appendChild(overlay);
+    overlay._semaiReadingPane = readingPane;
+    semaiUpdateReadingPaneBottomClearance(readingPane, overlay);
+    if (window.ResizeObserver) {
+      const resizeObserver = new ResizeObserver(() => {
+        semaiUpdateReadingPaneBottomClearance(readingPane, overlay);
+      });
+      const composer = overlay.querySelector(".semai-chat-composer");
+      const header = overlay.querySelector(".semai-chat-header");
+      if (composer) resizeObserver.observe(composer);
+      if (header) resizeObserver.observe(header);
+      overlay._semaiResizeObserver = resizeObserver;
+    }
   } else {
     overlay.classList.add("semai-chat-overlay-fixed");
     document.body.appendChild(overlay);
@@ -1859,7 +1958,10 @@ function semaiActivateChatView() {
 
 function semaiDeactivateChatView() {
   const overlay = document.getElementById("semai-chat-overlay");
+  const readingPane = overlay?.parentElement;
+  overlay?._semaiResizeObserver?.disconnect();
   if (overlay) overlay.remove();
+  semaiRemoveReadingPaneBottomClearance(readingPane);
   semaiChatViewActive = false;
   const bodies = document.querySelectorAll('[aria-label="Message body"]:not([contenteditable])');
   semaiAutoOpenSuppressedSignature = Array.from(bodies).map(b => b.dataset.semaiSigStripped || "").join("|");
@@ -1870,7 +1972,7 @@ function semaiDeactivateChatView() {
 function semaiUpdateChatToggleBtn() {
   const btn = document.querySelector(".semai-chat-toggle-btn");
   if (!btn) return;
-  btn.textContent = semaiChatViewActive ? "Hide chat view" : "Show chat view";
+  btn.textContent = semaiChatViewActive ? "Hide chat view" : "Turn on chat view";
 }
 
 // Show/hide the chat toggle based on whether we're looking at a thread
