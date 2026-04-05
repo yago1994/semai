@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "remou",
   "version": "0.1",
-  "description": "Rewrite Outlook Web emails in-place using an AI backend.",
+  "description": "Transform clutter-filled Outlook Web email threads into a modern chat-like interface to streamline communication.",
   "icons": {
     "48": "images/icon-48.png",
     "128": "images/icon-128.png"

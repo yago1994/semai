@@ -591,12 +591,12 @@ function createPanel() {
     <div class="semai-header">
       <div class="semai-header-left">
         <div class="semai-logo-dot"></div>
-        <div class="semai-title">semai</div>
+        <div class="semai-title">REMOU</div>
       </div>
       <button
         class="semai-toggle-btn"
         type="button"
-        aria-label="Collapse semai"
+        aria-label="Collapse REMOU"
       >
         ▴
       </button>
@@ -713,6 +713,39 @@ function semaiLooksLikeSig(el) {
   const shortLines = lines.filter(l => l.length <= SEMAI_SIG_SHORT_LINE_MAX).length;
   if (shortLines / lines.length < 0.8) return false;
   return SEMAI_PHONE_RE.test(text) || SEMAI_URL_RE.test(text) || SEMAI_SOCIAL_RE.test(text);
+}
+
+function semaiLooksLikeNestedDivSignature(el) {
+  if (!(el instanceof HTMLElement)) return false;
+  if (el.tagName !== "DIV" || el.getAttribute("dir")?.toLowerCase() !== "ltr") return false;
+
+  const childDivs = Array.from(el.children).filter((child) => child.tagName === "DIV");
+  if (childDivs.length < 4 || childDivs.length !== el.children.length) return false;
+
+  const lines = (el.innerText || el.textContent || "")
+    .split(/\r?\n|\r/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  if (lines.length < 6) return false;
+
+  const hasPhone = lines.some((line) => SEMAI_PHONE_RE.test(line));
+  const hasEmailOrUrl = lines.some((line) => /@/.test(line) || /\b(?:[a-z0-9-]+\.)+[a-z]{2,}(?:\/[^\s]*)?\b/i.test(line));
+  const hasOrgLine = lines.some((line) => /\b(university|school|medicine|program|director|professor|chair|clinical research|department|health)\b/i.test(line));
+
+  return hasPhone && hasEmailOrUrl && hasOrgLine;
+}
+
+function semaiFindNestedDivSignature(container) {
+  const candidates = Array.from(container.querySelectorAll('div[dir="ltr"]'));
+
+  for (let i = candidates.length - 1; i >= 0; i--) {
+    if (semaiLooksLikeNestedDivSignature(candidates[i])) {
+      return candidates[i];
+    }
+  }
+
+  return null;
 }
 
 function semaiMakeSigToggle(wrapper) {
@@ -948,7 +981,15 @@ function semaiStripSignature(body) {
     return;
   }
 
-  // ── Strategy 5: Heuristic — contact-card block near the bottom ───────
+  // ── Strategy 5: Specific nested div contact-card signature ────────────
+  const nestedDivSig = semaiFindNestedDivSignature(body);
+  if (nestedDivSig) {
+    semaiHideEl(nestedDivSig);
+    semaiLog("[semai] Signature hidden via nested div signature");
+    return;
+  }
+
+  // ── Strategy 6: Heuristic — contact-card block near the bottom ───────
   // Last resort: a block with 5+ short lines containing phone/URL/social.
   const children = Array.from(body.children);
   for (let i = children.length - 1; i >= Math.max(0, children.length - 6); i--) {
@@ -1440,11 +1481,17 @@ function semaiCleanBodyClone(bodyEl, senderFirstName) {
   const anchor = semaiFindSenderAnchor(clone, senderFirstName);
   if (anchor) removeFromAndAfter(anchor);
 
-  // ── 7. Strip closing phrase + name even when no contact block follows ──
+  // ── 7. Strip specific nested-div contact-card signatures directly ──────
+  const nestedDivSig = semaiFindNestedDivSignature(clone);
+  if (nestedDivSig) {
+    nestedDivSig.remove();
+  }
+
+  // ── 8. Strip closing phrase + name even when no contact block follows ──
   // e.g. "Best,\nMichael" at the very end — remove the closing and name too.
   semaiStripTrailingSignOff(clone, senderFirstName);
 
-  // ── 8. Remove trailing empty elements ──
+  // ── 9. Remove trailing empty elements ──
   while (clone.lastElementChild) {
     const last = clone.lastElementChild;
     if (!(last.innerText || last.textContent || "").trim()) {

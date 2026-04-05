@@ -4,7 +4,7 @@
         "description": "The display name for the extension."
     },
     "extension_description": {
-        "message": "This is remou Extension. You should tell us what your extension does here.",
+        "message": "Transform clutter-filled Outlook Web email threads into a modern chat-like interface to streamline communication.",
         "description": "Description of what the extension does."
     }
 }
