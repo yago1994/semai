@@ -403,6 +403,12 @@ body.semai-calibrating * {
   gap: 4px;
 }
 
+.semai-chat-end-spacer {
+  width: 100%;
+  min-height: 50px;
+  flex-shrink: 0;
+}
+
 #semai-chat-overlay[data-view-mode="real"] .semai-chat-scroll {
   visibility: hidden;
   pointer-events: none;

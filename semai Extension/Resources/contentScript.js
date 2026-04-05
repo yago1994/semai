@@ -1739,6 +1739,10 @@ function semaiCreateChatOverlay(messages, subject) {
     chatScroll.appendChild(row);
   });
 
+  const chatEndSpacer = document.createElement("div");
+  chatEndSpacer.className = "semai-chat-end-spacer";
+  chatScroll.appendChild(chatEndSpacer);
+
   content.appendChild(chatScroll);
   overlay.appendChild(content);
 
