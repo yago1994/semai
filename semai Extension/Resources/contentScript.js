@@ -698,8 +698,11 @@ function createPanel() {
 const SEMAI_SIG_SHORT_LINE_MAX = 60;
 const SEMAI_SIG_MIN_LINES = 5;
 const SEMAI_PHONE_RE = /\+?[\d][\d\s\-\.\(\)]{6,}/;
+const SEMAI_EMAIL_RE = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/i;
 const SEMAI_URL_RE = /https?:\/\/|www\./i;
 const SEMAI_SOCIAL_RE = /linkedin\.com|twitter\.com|facebook\.com|instagram\.com/i;
+const SEMAI_SIGNATURE_TITLE_RE = /\b(professor|director|chair|vice chair|clinical research|neurology|pediatrics|medicine|program|department|affiliate professor|research|health)\b/i;
+const SEMAI_SIGNATURE_ADDRESS_RE = /\b(suite|mailstop|building|circle|road|street|avenue|drive|lane|boulevard|floor|room|atlanta|georgia|\d{5}(?:-\d{4})?)\b/i;
 const SEMAI_BLOCK_TAGS = new Set([
   "P","DIV","BLOCKQUOTE","LI","H1","H2","H3","H4","H5","H6",
   "SECTION","ARTICLE","HEADER","FOOTER","MAIN","TABLE","TR","TD","TH"
@@ -742,6 +745,173 @@ function semaiFindNestedDivSignature(container) {
   for (let i = candidates.length - 1; i >= 0; i--) {
     if (semaiLooksLikeNestedDivSignature(candidates[i])) {
       return candidates[i];
+    }
+  }
+
+  return null;
+}
+
+function semaiNormalizeNameLine(text) {
+  return (text || "")
+    .replace(/[^\p{L}\s.'-]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function semaiGetNameTokens(text) {
+  return semaiNormalizeNameLine(text)
+    .split(/\s+/)
+    .filter((token) => token.length >= 2);
+}
+
+function semaiLooksLikeNameLine(text, senderFirstName) {
+  const raw = (text || "").trim();
+  if (!raw || raw.length > 60) return false;
+
+  const tokens = raw.split(/\s+/).filter(Boolean);
+  if (tokens.length === 0 || tokens.length > 5) return false;
+
+  const nameish = tokens.every((token) => /^[A-Z][A-Za-z.'-]*$/.test(token) || /^[A-Z]\.$/.test(token));
+  if (nameish) return true;
+
+  return !!senderFirstName && raw.toLowerCase() === senderFirstName;
+}
+
+function semaiCountContactSignals(text, containerEl) {
+  const signalKinds = new Set();
+  // Build the full scan string: visible text + any href values from <a> tags
+  let raw = text || "";
+  if (containerEl && typeof containerEl.querySelectorAll === "function") {
+    const hrefs = Array.from(containerEl.querySelectorAll("a"))
+      .map(a => a.getAttribute("href") || "")
+      .filter(Boolean)
+      .join(" ");
+    if (hrefs) raw = raw + " " + hrefs;
+  }
+
+  if (SEMAI_PHONE_RE.test(raw)) signalKinds.add("phone");
+  if (SEMAI_EMAIL_RE.test(raw)) signalKinds.add("email");
+  if (SEMAI_URL_RE.test(raw) || SEMAI_SOCIAL_RE.test(raw)) signalKinds.add("url");
+  if (SEMAI_SIGNATURE_TITLE_RE.test(raw)) signalKinds.add("title");
+  if (SEMAI_SIGNATURE_ADDRESS_RE.test(raw)) signalKinds.add("address");
+
+  return signalKinds.size;
+}
+
+function semaiLooksLikeCompactBlock(el) {
+  const text = (el?.innerText || el?.textContent || "").trim();
+  if (!text) return false;
+
+  const lines = text.split(/\n+/).map((line) => line.trim()).filter(Boolean);
+  if (lines.length > 18) return false;
+
+  return text.length <= 600;
+}
+
+function semaiLooksLikeContactCardBlock(el) {
+  if (!(el instanceof HTMLElement)) return false;
+
+  const text = (el.innerText || el.textContent || "").trim();
+  if (!text) return false;
+
+  const lines = text.split(/\n+/).map((line) => line.trim()).filter(Boolean);
+  const shortLines = lines.filter((line) => line.length <= 90).length;
+  const compactRatio = lines.length > 0 ? shortLines / lines.length : 0;
+  const signalCount = semaiCountContactSignals(text, el);
+  const hasTableOrRichLinks =
+    el.tagName === "TABLE" ||
+    !!el.querySelector("table, img, a[href^='mailto:'], a[href*='linkedin'], a[href*='calendar'], a[href*='opt_out']");
+
+  return (
+    (signalCount >= 2 && lines.length >= 3 && compactRatio >= 0.6) ||
+    (signalCount >= 1 && hasTableOrRichLinks)
+  );
+}
+
+// Detect when the entire body is a compact branded signature with no actual message.
+// Returns true if the content starts with the sender's name and has URL/image signals
+// but no long-sentence body text — i.e., the whole email IS the signature.
+function semaiIsEntireBodySignature(clone, senderFirstName) {
+  if (!senderFirstName) return false;
+
+  const text = (clone.textContent || "").replace(/\s+/g, " ").trim();
+  if (!text) return false;
+
+  // Must be short overall — a real message body would be longer
+  if (text.length > 400) return false;
+
+  // First non-empty line must start with the sender's first name
+  const lines = text.split(/(?<=[.!?])\s+|\n+/).map(l => l.trim()).filter(Boolean);
+  if (lines.length === 0) return false;
+  if (!lines[0].toLowerCase().startsWith(senderFirstName.toLowerCase())) return false;
+
+  // Must have at least one URL/image signal in the raw HTML
+  const hasUrl = SEMAI_URL_RE.test(text) || !!clone.querySelector("img, a[href]");
+  if (!hasUrl) return false;
+
+  // Must NOT have any long sentence (real message body would have sentences > 60 chars)
+  const hasLongSentence = lines.some(l => l.length > 60 && /\s/.test(l));
+  if (hasLongSentence) return false;
+
+  return true;
+}
+
+function semaiFindRepeatedNameSignatureAnchor(container, senderFirstName) {
+  const blocks = Array.from(container.querySelectorAll("p, div, table, td"))
+    .filter((el) => semaiLooksLikeCompactBlock(el));
+  if (blocks.length < 3) return null;
+
+  const startAt = Math.max(0, blocks.length - 24);
+  for (let i = startAt; i < blocks.length; i++) {
+    const currentText = (blocks[i].innerText || blocks[i].textContent || "").trim();
+    if (!semaiLooksLikeNameLine(currentText, senderFirstName)) continue;
+
+    const currentTokens = semaiGetNameTokens(currentText);
+    if (currentTokens.length === 0) continue;
+
+    for (let j = i + 1; j < Math.min(blocks.length, i + 8); j++) {
+      const nextEl = blocks[j];
+      const nextText = (nextEl.innerText || nextEl.textContent || "").trim();
+      if (!nextText) continue;
+
+      const nextTokens = semaiGetNameTokens(nextText);
+      const repeatedName = currentTokens.some((token) => nextTokens.includes(token));
+      if (!repeatedName) continue;
+
+      let signalText = nextText;
+      let signalEls = [nextEl];
+      let contactCardSeen = semaiLooksLikeContactCardBlock(nextEl);
+      for (let k = j + 1; k < Math.min(blocks.length, j + 8); k++) {
+        const blockText = (blocks[k].innerText || blocks[k].textContent || "").trim();
+        if (!blockText) continue;
+        signalText += "\n" + blockText;
+        signalEls.push(blocks[k]);
+        if (semaiLooksLikeContactCardBlock(blocks[k])) {
+          contactCardSeen = true;
+        }
+      }
+
+      // Build a temporary wrapper so semaiCountContactSignals can scan hrefs too
+      const signalWrapper = document.createElement("div");
+      signalEls.forEach(e => signalWrapper.appendChild(e.cloneNode(true)));
+
+      if (semaiCountContactSignals(signalText, signalWrapper) >= 2 && contactCardSeen) {
+        // Return the ancestor of nextEl whose parent is also an ancestor of blocks[i],
+        // so that removeFromAndAfter cuts at the right level (removing the signature
+        // block and everything after it, not just the name line inside the email body).
+        const nameLineAncestors = new Set();
+        let anc = blocks[i];
+        while (anc && anc !== container) { nameLineAncestors.add(anc); anc = anc.parentElement; }
+
+        let cutEl = nextEl;
+        let walker = nextEl;
+        while (walker && walker !== container) {
+          if (nameLineAncestors.has(walker.parentElement)) { cutEl = walker; break; }
+          walker = walker.parentElement;
+        }
+        return cutEl;
+      }
     }
   }
 
@@ -1005,6 +1175,8 @@ function semaiStripSignature(body) {
 
 let semaiChatViewActive = false;
 let semaiCurrentUser = null; // { name, email, initials }
+let semaiReportHoverRow = null;
+let semaiReportModeOverlay = null;
 
 // Deterministic avatar colour from name — 8-colour palette
 const SEMAI_AVATAR_COLORS = [
@@ -1021,6 +1193,239 @@ function semaiInitials(name) {
   if (parts.length === 0) return "?";
   if (parts.length === 1) return parts[0][0].toUpperCase();
   return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+}
+
+function semaiEscapeHtml(text) {
+  return String(text || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function semaiBuildGitHubIssueBody(message, subject) {
+  const senderName = message.sender?.name || "Unknown";
+  const senderEmail = message.sender?.email || "Unknown";
+  const timestamp = message.timestamp || "Unknown";
+  const excerpt = (message.cleanHtml || "")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 500);
+
+  return [
+    "## Reported from REMOU",
+    "",
+    `- Subject: ${subject || "Conversation"}`,
+    `- Sender: ${senderName}`,
+    `- Sender Email: ${senderEmail}`,
+    `- Timestamp: ${timestamp}`,
+    `- Page URL: ${window.location.href}`,
+    "",
+    "## Excerpt",
+    "",
+    excerpt || "No text extracted.",
+    "",
+    "## Clean HTML",
+    "",
+    "```html",
+    message.cleanHtml || "",
+    "```",
+    "",
+    "## Original HTML",
+    "",
+    "```html",
+    message.rawHtml || "",
+    "```"
+  ].join("\n");
+}
+
+async function semaiCreateGitHubIssue(message, subject) {
+  if (!REMOU_GITHUB_TOKEN) {
+    throw new Error("Missing GitHub token in secrets.js.");
+  }
+
+  if (!REMOU_GITHUB_REPO) {
+    throw new Error("Missing GitHub repo in secrets.js.");
+  }
+
+  const titleParts = [
+    "UI issue",
+    subject || "Conversation",
+    message.sender?.name || "Unknown sender"
+  ];
+  const response = await fetch(`https://api.github.com/repos/${REMOU_GITHUB_REPO}/issues`, {
+    method: "POST",
+    headers: {
+      "Accept": "application/vnd.github+json",
+      "Authorization": `Bearer ${REMOU_GITHUB_TOKEN}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      title: titleParts.join(" | ").slice(0, 240),
+      body: semaiBuildGitHubIssueBody(message, subject)
+    })
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(errorData.message || `GitHub API error ${response.status}`);
+  }
+
+  return response.json();
+}
+
+function semaiClearReportHover() {
+  if (semaiReportHoverRow) {
+    semaiReportHoverRow.classList.remove("semai-chat-row-report-hover");
+    semaiReportHoverRow = null;
+  }
+}
+
+function semaiSetReportModeStatus(overlay, message, tone = "neutral") {
+  const status = overlay?.querySelector("#semai-chat-reply-status");
+  if (!status) return;
+  status.textContent = message;
+  status.dataset.tone = tone;
+}
+
+function semaiSetReportModeHint(overlay, message = "") {
+  const hint = overlay?.querySelector("#semai-chat-report-hint");
+  if (!hint) return;
+
+  hint.textContent = message;
+  hint.hidden = !message;
+}
+
+function semaiHandleReportModeKeydown(event) {
+  if (event.key !== "Escape" || !semaiReportModeOverlay) return;
+
+  event.preventDefault();
+  semaiExitReportMode(semaiReportModeOverlay);
+}
+
+function semaiExitReportMode(overlay, statusMessage, tone = "neutral") {
+  if (!overlay) return;
+
+  overlay.classList.remove("semai-chat-report-mode");
+  overlay.dataset.reportMode = "inactive";
+  document.removeEventListener("keydown", semaiHandleReportModeKeydown, true);
+  semaiReportModeOverlay = null;
+  semaiClearReportHover();
+  semaiSetReportModeHint(overlay, "");
+
+  const reportButton = overlay.querySelector("#semai-chat-report-issue-btn");
+  if (reportButton) {
+    reportButton.classList.remove("semai-chat-report-issue-btn-active");
+    reportButton.disabled = false;
+  }
+
+  if (statusMessage) {
+    semaiSetReportModeStatus(overlay, statusMessage, tone);
+    return;
+  }
+
+  semaiUpdateOverlayViewToggle(overlay);
+}
+
+function semaiEnterReportMode(overlay) {
+  if (!overlay) return;
+
+  overlay.dataset.reportMode = "active";
+  overlay.classList.add("semai-chat-report-mode");
+  document.addEventListener("keydown", semaiHandleReportModeKeydown, true);
+  semaiReportModeOverlay = overlay;
+
+  const reportButton = overlay.querySelector("#semai-chat-report-issue-btn");
+  if (reportButton) {
+    reportButton.classList.add("semai-chat-report-issue-btn-active");
+  }
+
+  semaiSetReportModeHint(
+    overlay,
+    "Hover an email, click to report it, or press Esc to cancel."
+  );
+
+  semaiSetReportModeStatus(
+    overlay,
+    "Report mode is on.",
+    "report"
+  );
+}
+
+function semaiToggleReportMode(overlay) {
+  if (!overlay) return;
+
+  if (overlay.dataset.reportMode === "active") {
+    semaiExitReportMode(
+      overlay,
+      overlay.dataset.viewMode === "real"
+        ? "The original Outlook thread is visible above the reply box. Use the eye button to switch back to chat bubbles."
+        : "Chat view is on. Use the eye button to switch only the thread view above this reply box."
+    );
+    return;
+  }
+
+  semaiEnterReportMode(overlay);
+}
+
+function semaiGetReportRowFromEventTarget(target) {
+  if (!(target instanceof Element)) return null;
+  return target.closest(".semai-chat-row[data-report-index]");
+}
+
+function semaiHandleReportRowHover(event) {
+  if (!semaiReportModeOverlay || semaiReportModeOverlay.dataset.reportMode !== "active") {
+    semaiClearReportHover();
+    return;
+  }
+
+  const row = semaiGetReportRowFromEventTarget(event.target);
+  if (row === semaiReportHoverRow) return;
+
+  semaiClearReportHover();
+  if (!row) return;
+
+  semaiReportHoverRow = row;
+  semaiReportHoverRow.classList.add("semai-chat-row-report-hover");
+}
+
+async function semaiHandleReportRowClick(event) {
+  const overlay = semaiReportModeOverlay;
+  if (!overlay || overlay.dataset.reportMode !== "active") return;
+
+  const row = semaiGetReportRowFromEventTarget(event.target);
+  if (!row) return;
+
+  event.preventDefault();
+  event.stopPropagation();
+
+  const reportButton = overlay.querySelector("#semai-chat-report-issue-btn");
+  const index = Number(row.dataset.reportIndex);
+  const message = overlay._semaiMessages?.[index];
+  const subject = overlay._semaiSubject || "Conversation";
+  if (!message) return;
+
+  if (reportButton) {
+    reportButton.disabled = true;
+  }
+
+  semaiSetReportModeStatus(overlay, "Creating GitHub issue…", "report");
+
+  try {
+    const issue = await semaiCreateGitHubIssue(message, subject);
+    semaiExitReportMode(
+      overlay,
+      `Issue #${issue.number} created for ${message.sender?.name || "this message"}.`,
+      "success"
+    );
+  } catch (error) {
+    semaiSetReportModeStatus(overlay, error.message || "Failed to create GitHub issue.", "error");
+    if (reportButton) {
+      reportButton.disabled = false;
+    }
+  }
 }
 
 function semaiGetCalibration() {
@@ -1441,6 +1846,25 @@ function semaiCleanBodyClone(bodyEl, senderFirstName) {
     clone.innerHTML = bodyEl.innerHTML;
   }
 
+  // ── 0a. Short-circuit: if the entire body is a compact branded signature, return empty ──
+  if (semaiIsEntireBodySignature(clone, senderFirstName)) {
+    return "";
+  }
+
+  // ── 0. Remove Outlook "external sender" warning banners ──
+  //    These are injected by Exchange/Outlook and contain links to aka.ms/LearnAboutSenderIdentification
+  clone.querySelectorAll('a[href*="LearnAboutSenderIdentification"]').forEach(a => {
+    let el = a;
+    while (el && el !== clone) {
+      const tag = el.tagName;
+      if (tag === "TABLE" || (tag === "DIV" && el.parentElement !== clone)) {
+        el.remove();
+        break;
+      }
+      el = el.parentElement;
+    }
+  });
+
   // ── 1. Remove Outlook reply/forward header blocks ──
   clone.querySelectorAll(
     '#divRplyFwdMsg, div[id*="divRplyFwdMsg"], div[id*="appendonsend"]'
@@ -1480,6 +1904,10 @@ function semaiCleanBodyClone(bodyEl, senderFirstName) {
   // Uses the same anchor logic as the reading-view signature stripper.
   const anchor = semaiFindSenderAnchor(clone, senderFirstName);
   if (anchor) removeFromAndAfter(anchor);
+
+  // ── 6b. Strip repeated-name contact cards with 2+ contact signals ──────
+  const repeatedNameAnchor = semaiFindRepeatedNameSignatureAnchor(clone, senderFirstName);
+  if (repeatedNameAnchor) removeFromAndAfter(repeatedNameAnchor);
 
   // ── 7. Strip specific nested-div contact-card signatures directly ──────
   const nestedDivSig = semaiFindNestedDivSignature(clone);
@@ -1690,12 +2118,15 @@ function semaiCreateChatOverlay(messages, subject) {
   const overlay = document.createElement("div");
   overlay.id = "semai-chat-overlay";
   overlay.dataset.viewMode = "chat";
+  overlay.dataset.reportMode = "inactive";
+  overlay._semaiMessages = messages;
+  overlay._semaiSubject = subject;
 
   // Header bar
   const header = document.createElement("div");
   header.className = "semai-chat-header";
   header.innerHTML = `
-    <span class="semai-chat-subject">${subject.replace(/</g, "&lt;")}</span>
+    <span class="semai-chat-subject">${semaiEscapeHtml(subject)}</span>
     <button class="semai-chat-close" type="button">✕ Hide chat view</button>
   `;
   header.querySelector(".semai-chat-close").addEventListener("click", semaiDeactivateChatView);
@@ -1708,11 +2139,12 @@ function semaiCreateChatOverlay(messages, subject) {
   const chatScroll = document.createElement("div");
   chatScroll.className = "semai-chat-scroll";
 
-  messages.forEach((msg) => {
+  messages.forEach((msg, index) => {
     if (!msg.cleanHtml) return; // skip empty bodies
 
     const row = document.createElement("div");
     row.className = `semai-chat-row ${msg.isMe ? "semai-chat-me" : "semai-chat-them"}`;
+    row.dataset.reportIndex = String(index);
 
     const avatar = document.createElement("div");
     avatar.className = "semai-chat-avatar";
@@ -1761,6 +2193,14 @@ function semaiCreateChatOverlay(messages, subject) {
       </div>
       <div class="semai-chat-reply-actions">
         <button
+          id="semai-chat-report-issue-btn"
+          class="semai-chat-report-issue-btn"
+          type="button"
+        >
+          Report issue
+        </button>
+        <span id="semai-chat-report-hint" class="semai-chat-report-hint" hidden></span>
+        <button
           id="semai-chat-view-toggle-btn"
           class="semai-chat-view-toggle-btn"
           type="button"
@@ -1785,10 +2225,14 @@ function semaiCreateChatOverlay(messages, subject) {
   `;
 
   const replyInput = composer.querySelector("#semai-chat-reply-input");
+  const reportIssueBtn = composer.querySelector("#semai-chat-report-issue-btn");
   const viewToggleBtn = composer.querySelector("#semai-chat-view-toggle-btn");
   const draftBtn = composer.querySelector("#semai-chat-reply-draft-btn");
   const replyBtn = composer.querySelector("#semai-chat-reply-send-btn");
 
+  reportIssueBtn.addEventListener("click", () => {
+    semaiToggleReportMode(overlay);
+  });
   viewToggleBtn.addEventListener("click", () => {
     semaiToggleOverlayView(overlay);
   });
@@ -1805,6 +2249,11 @@ function semaiCreateChatOverlay(messages, subject) {
       semaiSendReplyAllFromChat();
     }
   });
+  chatScroll.addEventListener("mousemove", semaiHandleReportRowHover);
+  chatScroll.addEventListener("mouseleave", () => {
+    semaiClearReportHover();
+  });
+  chatScroll.addEventListener("click", semaiHandleReportRowClick, true);
 
   overlay.appendChild(composer);
   semaiUpdateOverlayViewToggle(overlay);
@@ -1822,10 +2271,11 @@ function semaiUpdateOverlayViewToggle(overlay) {
   toggleBtn.setAttribute("aria-label", isChatView ? "Show real thread above the reply box" : "Show chat thread above the reply box");
   toggleBtn.setAttribute("title", isChatView ? "Show real thread above the reply box" : "Show chat thread above the reply box");
 
-  if (status) {
+  if (status && overlay.dataset.reportMode !== "active") {
     status.textContent = isChatView
       ? "Chat view is on. Use the eye button to switch only the thread view above this reply box."
       : "The original Outlook thread is visible above the reply box. Use the eye button to switch back to chat bubbles.";
+    delete status.dataset.tone;
   }
 
   if (overlay._semaiReadingPane) {
@@ -1963,6 +2413,9 @@ function semaiActivateChatView() {
 function semaiDeactivateChatView() {
   const overlay = document.getElementById("semai-chat-overlay");
   const readingPane = overlay?.parentElement;
+  document.removeEventListener("keydown", semaiHandleReportModeKeydown, true);
+  semaiReportModeOverlay = null;
+  semaiClearReportHover();
   overlay?._semaiResizeObserver?.disconnect();
   if (overlay) overlay.remove();
   semaiRemoveReadingPaneBottomClearance(readingPane);

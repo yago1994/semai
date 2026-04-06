@@ -425,6 +425,8 @@ body.semai-calibrating * {
   gap: 8px;
   max-width: 100%;
   width: 100%;
+  border-radius: 22px;
+  transition: box-shadow 0.15s ease, background 0.15s ease, transform 0.15s ease;
 }
 
 .semai-chat-them {
@@ -498,6 +500,20 @@ body.semai-calibrating * {
   border-radius: 8px;
 }
 
+#semai-chat-overlay.semai-chat-report-mode .semai-chat-scroll {
+  cursor: crosshair;
+}
+
+#semai-chat-overlay.semai-chat-report-mode .semai-chat-row:hover {
+  cursor: crosshair;
+}
+
+.semai-chat-row-report-hover {
+  background: rgba(37, 99, 235, 0.08);
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.9), 0 0 0 8px rgba(37, 99, 235, 0.12);
+  transform: translateY(-1px);
+}
+
 .semai-chat-composer {
   padding: 12px 16px 14px;
   background: rgba(255, 255, 255, 0.94);
@@ -545,7 +561,41 @@ body.semai-calibrating * {
 .semai-chat-reply-actions {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 8px;
+}
+
+.semai-chat-report-issue-btn {
+  border: 1px solid rgba(239, 68, 68, 0.22);
+  border-radius: 999px;
+  padding: 8px 12px;
+  background: rgba(254, 242, 242, 0.96);
+  color: #b91c1c;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  transition: background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.semai-chat-report-issue-btn:hover {
+  background: rgba(254, 226, 226, 0.96);
+  border-color: rgba(239, 68, 68, 0.38);
+}
+
+.semai-chat-report-issue-btn-active {
+  background: #dc2626;
+  color: #ffffff;
+  border-color: #dc2626;
+  box-shadow: 0 8px 18px rgba(220, 38, 38, 0.24);
+}
+
+.semai-chat-report-hint {
+  max-width: 220px;
+  font-size: 11px;
+  line-height: 1.35;
+  color: #b91c1c;
 }
 
 .semai-chat-view-toggle-btn {
@@ -630,11 +680,20 @@ body.semai-calibrating * {
 }
 
 .semai-chat-view-toggle-btn:disabled,
+.semai-chat-report-issue-btn:disabled,
 .semai-chat-reply-draft-btn:disabled,
 .semai-chat-reply-btn:disabled {
   opacity: 0.6;
   cursor: default;
   box-shadow: none;
+}
+
+.semai-chat-reply-status[data-tone="report"] {
+  color: #1d4ed8;
+}
+
+.semai-chat-reply-status[data-tone="error"] {
+  color: #b91c1c;
 }
 
 .semai-reading-pane-spacer {

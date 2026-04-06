@@ -25,6 +25,7 @@
     "https://outlook.live.com/*",
     "https://outlook.office365.com/*",
     "https://outlook.cloud.microsoft/*",
-    "https://api.openai.com/*"
+    "https://api.openai.com/*",
+    "https://api.github.com/*"
   ]
 }
