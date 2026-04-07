@@ -1,28 +1,113 @@
 #!/usr/bin/env node
 // scripts/call-claude.js
-// Usage: node scripts/call-claude.js <prompt-file> <response-file>
+// Assembles a prompt from issue context + source files, calls Claude, writes response.
 //
-// Reads a plain-text prompt from <prompt-file>, calls the Anthropic Messages API,
-// and writes the full response JSON to <response-file>.
-// Exits non-zero on any HTTP or parse error so GitHub Actions can detect failure.
+// Usage: node scripts/call-claude.js <response-file> [prev-explanation-file]
+//
+// Required env vars:
+//   ANTHROPIC_API_KEY, ISSUE_TITLE, ISSUE_BODY
+//
+// Optional env vars:
+//   FAILING_TESTS_FILE   path to JSON file with test results (default: /tmp/baseline.json)
+//   ATTEMPT              attempt number for logging (default: 1)
 
 import fs from 'fs';
 import https from 'https';
+import path from 'path';
+import { fileURLToPath } from 'url';
 
-const [,, promptFile, responseFile] = process.argv;
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const ROOT = path.resolve(__dirname, '..');
 
-if (!promptFile || !responseFile) {
-  console.error('Usage: node scripts/call-claude.js <prompt-file> <response-file>');
+const [,, responseFile, prevExplanationFile] = process.argv;
+
+if (!responseFile) {
+  console.error('Usage: node scripts/call-claude.js <response-file> [prev-explanation-file]');
   process.exit(1);
 }
 
 const apiKey = process.env.ANTHROPIC_API_KEY;
-if (!apiKey) {
-  console.error('ERROR: ANTHROPIC_API_KEY env var is not set.');
-  process.exit(1);
+if (!apiKey) { console.error('ERROR: ANTHROPIC_API_KEY is not set.'); process.exit(1); }
+
+const issueTitle = process.env.ISSUE_TITLE ?? '(no title)';
+const issueBody  = process.env.ISSUE_BODY  ?? '(no body)';
+const attempt    = process.env.ATTEMPT     ?? '1';
+
+// ── Read optional context files ───────────────────────────────────────────────
+
+const failingTestsFile = process.env.FAILING_TESTS_FILE ?? '/tmp/baseline.json';
+let failingTests = '{}';
+try { failingTests = fs.readFileSync(failingTestsFile, 'utf8'); } catch { /* none yet */ }
+
+let prevExplanation = '';
+if (prevExplanationFile) {
+  try { prevExplanation = fs.readFileSync(prevExplanationFile, 'utf8').trim(); } catch { /* first attempt */ }
 }
 
-const prompt = fs.readFileSync(promptFile, 'utf8');
+// ── Read source context ───────────────────────────────────────────────────────
+
+function readSource(relPath, maxLines) {
+  const abs = path.join(ROOT, relPath);
+  try {
+    const lines = fs.readFileSync(abs, 'utf8').split('\n');
+    const slice = maxLines ? lines.slice(0, maxLines) : lines;
+    return slice.join('\n');
+  } catch {
+    return `(file not found: ${relPath})`;
+  }
+}
+
+const sourceFiles = [
+  { path: 'semai Extension/Resources/background.js',    maxLines: null },
+  { path: 'semai Extension/Resources/content.js',       maxLines: null },
+  { path: 'docs/patches/patches.json',                  maxLines: null },
+  { path: 'tests/test-cases.json',                      maxLines: null },
+  { path: 'semai Extension/Resources/contentScript.js', maxLines: 200  }, // token budget
+];
+
+let sourceContext = '';
+for (const { path: p, maxLines } of sourceFiles) {
+  const label = maxLines ? `${p} (first ${maxLines} lines)` : p;
+  sourceContext += `\n### ${label}\n\`\`\`\n${readSource(p, maxLines)}\n\`\`\`\n`;
+}
+
+// ── Build prompt ──────────────────────────────────────────────────────────────
+
+const prevSection = prevExplanation
+  ? `\n## Previous attempt explanation (attempt ${Number(attempt) - 1})\n${prevExplanation}\n`
+  : '';
+
+const prompt = `You are a self-healing Safari Web Extension auto-fix engine. Attempt ${attempt} of 3.
+
+## Bug report
+Title: ${issueTitle}
+Body:
+${issueBody}
+
+## Failing tests (JSON)
+${failingTests}
+${prevSection}
+## Source context
+${sourceContext}
+
+## Task
+1. Analyse the bug report and failing tests.
+2. Propose a minimal fix. The fix may be a source file change and/or a new patches.json entry.
+3. Propose a new test case for tests/test-cases.json that captures this specific bug.
+
+Respond with ONLY valid JSON — no markdown fences, no text outside the JSON object:
+{
+  "explanation": "<one paragraph describing the fix>",
+  "files": [
+    { "path": "<repo-relative path>", "content": "<complete updated file content>" }
+  ],
+  "newTestCase": { "id": "...", "description": "...", "fixture": "...", "patch": null, "assertions": [] },
+  "patchEntry": null
+}
+
+Use "files": [] if no file changes are needed. Set "newTestCase" or "patchEntry" to null if not applicable.`;
+
+// ── Call Anthropic API ────────────────────────────────────────────────────────
 
 const requestBody = JSON.stringify({
   model: 'claude-sonnet-4-6',
@@ -42,6 +127,8 @@ const options = {
   }
 };
 
+console.log(`[call-claude] Attempt ${attempt} — sending prompt (${prompt.length} chars)`);
+
 const req = https.request(options, (res) => {
   let raw = '';
   res.on('data', (chunk) => { raw += chunk; });
@@ -53,10 +140,8 @@ const req = https.request(options, (res) => {
     }
 
     let parsed;
-    try {
-      parsed = JSON.parse(raw);
-    } catch (e) {
-      console.error('ERROR: Could not parse Anthropic API response as JSON.');
+    try { parsed = JSON.parse(raw); } catch {
+      console.error('ERROR: Could not parse Anthropic response as JSON.');
       console.error(raw.slice(0, 500));
       process.exit(1);
     }
@@ -73,7 +158,6 @@ const req = https.request(options, (res) => {
       process.exit(1);
     }
 
-    // Write the extracted text as the response file so the workflow can parse it directly.
     fs.writeFileSync(responseFile, text, 'utf8');
     console.log(`[call-claude] Response written to ${responseFile} (${text.length} chars)`);
   });
