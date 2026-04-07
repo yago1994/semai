@@ -561,8 +561,6 @@ body.semai-calibrating * {
 .semai-chat-reply-actions {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
-  justify-content: flex-end;
   gap: 8px;
 }
 
@@ -589,13 +587,6 @@ body.semai-calibrating * {
   color: #ffffff;
   border-color: #dc2626;
   box-shadow: 0 8px 18px rgba(220, 38, 38, 0.24);
-}
-
-.semai-chat-report-hint {
-  max-width: 220px;
-  font-size: 11px;
-  line-height: 1.35;
-  color: #b91c1c;
 }
 
 .semai-chat-view-toggle-btn {

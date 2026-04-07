@@ -210,6 +210,12 @@ function semaiLooksLikeContactCardBlock(el) {
 function semaiIsEntireBodySignature(clone, senderFirstName) {
   if (!senderFirstName) return false;
 
+  // Normalize to array of tokens for matching
+  const nameTokens = Array.isArray(senderFirstName)
+    ? senderFirstName
+    : [senderFirstName.toLowerCase()];
+  if (nameTokens.length === 0) return false;
+
   const text = (clone.textContent || "").replace(/\s+/g, " ").trim();
   if (!text) return false;
 
@@ -222,7 +228,8 @@ function semaiIsEntireBodySignature(clone, senderFirstName) {
   const lines = text.split(/(?<=[.!?])\s+|\n+/).map(l => l.trim()).filter(Boolean);
   if (lines.length === 0) return false;
   const firstThreeText = lines.slice(0, 3).join(" ").toLowerCase();
-  if (!firstThreeText.includes(senderFirstName.toLowerCase())) return false;
+  const sigNameTokens = Array.isArray(senderFirstName) ? senderFirstName : [senderFirstName];
+  if (!sigNameTokens.some(t => firstThreeText.includes(t.toLowerCase()))) return false;
 
   // Must have at least one URL/image signal in the raw HTML
   const hasUrl = SEMAI_URL_RE.test(text) || !!clone.querySelector("img, a[href]");
@@ -235,7 +242,13 @@ function semaiIsEntireBodySignature(clone, senderFirstName) {
   return true;
 }
 
-function semaiFindRepeatedNameSignatureAnchor(container, senderFirstName) {
+function semaiFindRepeatedNameSignatureAnchor(container, senderFirstNameOrTokens) {
+  // Accept either a single string (backward compat) or an array of tokens
+  const nameTokens = Array.isArray(senderFirstNameOrTokens)
+    ? senderFirstNameOrTokens
+    : (senderFirstNameOrTokens ? [senderFirstNameOrTokens.toLowerCase()] : []);
+  const senderFirstName = nameTokens.length > 0 ? nameTokens[0] : null;
+
   const blocks = Array.from(container.querySelectorAll("p, div, table, td"))
     .filter(el => semaiLooksLikeCompactBlock(el));
   if (blocks.length < 3) return null;
@@ -243,7 +256,11 @@ function semaiFindRepeatedNameSignatureAnchor(container, senderFirstName) {
   const startAt = Math.max(0, blocks.length - 24);
   for (let i = startAt; i < blocks.length; i++) {
     const currentText = (blocks[i].textContent || "").trim();
-    if (!semaiLooksLikeNameLine(currentText, senderFirstName)) continue;
+    // Check if name line matches ANY token
+    const matchesAnyToken = nameTokens.length > 0
+      ? nameTokens.some(token => semaiLooksLikeNameLine(currentText, token))
+      : semaiLooksLikeNameLine(currentText, null);
+    if (!matchesAnyToken) continue;
 
     const currentTokens = semaiGetNameTokens(currentText);
     if (currentTokens.length === 0) continue;
@@ -291,6 +308,90 @@ function semaiFindRepeatedNameSignatureAnchor(container, senderFirstName) {
     }
   }
   return null;
+}
+
+// ── Standalone contact-card detection (no preceding sign-off required) ────────
+const SEMAI_CREDENTIALS_RE = /\b(ph\.?d|m\.?d|m\.?s|m\.?a|m\.?b\.?a|j\.?d|ed\.?d|d\.?o|r\.?n|b\.?s|b\.?a|abpp|faes|faan|fana|facs|frcp|lcsw|lpc|lmft|cpa|esq|pe)\b/i;
+
+function semaiFindStandaloneContactCard(container, senderFirstNameOrTokens) {
+  // Accept either a single string (backward compat) or an array of tokens
+  const nameTokens = Array.isArray(senderFirstNameOrTokens)
+    ? senderFirstNameOrTokens
+    : (senderFirstNameOrTokens ? [senderFirstNameOrTokens.toLowerCase()] : []);
+  if (nameTokens.length === 0) return null;
+
+  const blocks = Array.from(container.querySelectorAll("p, div, table, td"))
+    .filter(el => {
+      const text = (el.textContent || "").trim();
+      return text && text.length <= 600;
+    });
+
+  if (blocks.length < 2) return null;
+
+  for (let i = 0; i < blocks.length; i++) {
+    const el = blocks[i];
+    const text = (el.textContent || "").trim();
+    if (!text) continue;
+
+    const lines = text.split(/\r?\n|\r/).map(l => l.trim()).filter(Boolean);
+    if (lines.length === 0) continue;
+
+    const firstLine = lines[0];
+
+    // First line must start with ANY sender name token (case insensitive)
+    const firstLineLower = firstLine.toLowerCase();
+    const matchedToken = nameTokens.find(token => firstLineLower.startsWith(token.toLowerCase()));
+    if (!matchedToken) continue;
+    const charAfter = firstLine[matchedToken.length];
+    if (charAfter && !/[\s,.]/.test(charAfter)) continue;
+
+    const hasCredentials = SEMAI_CREDENTIALS_RE.test(firstLine);
+    const hasTitle = lines.length >= 2 && SEMAI_SIGNATURE_TITLE_RE.test(lines.slice(0, 3).join(" "));
+    if (!hasCredentials && !hasTitle) continue;
+
+    let signalText = text;
+    let signalEls = [el];
+    for (let k = i + 1; k < Math.min(blocks.length, i + 10); k++) {
+      const sibText = (blocks[k].textContent || "").trim();
+      if (!sibText) continue;
+      if (!container.contains(blocks[k])) break;
+      signalText += "\n" + sibText;
+      signalEls.push(blocks[k]);
+    }
+
+    const signalWrapper = document.createElement("div");
+    signalEls.forEach(e => signalWrapper.appendChild(e.cloneNode(true)));
+
+    const signalCount = semaiCountContactSignals(signalText, signalWrapper);
+    if (signalCount < 2) continue;
+
+    let cutEl = el;
+    let walker = el;
+    while (walker && walker !== container) {
+      const parent = walker.parentElement;
+      if (!parent || parent === container) break;
+      const siblings = Array.from(parent.children);
+      const hasBodyTextSibling = siblings.some(sib => {
+        if (sib === walker) return false;
+        const sibText = (sib.textContent || "").trim();
+        return sibText.length > 0 && sibText !== "\u00a0";
+      });
+      if (hasBodyTextSibling) { cutEl = walker; break; }
+      walker = parent;
+    }
+
+    return cutEl;
+  }
+
+  return null;
+}
+
+// ── Mobile auto-signature patterns ───────────────────────────────────────────
+const SEMAI_MOBILE_SIG_RE = /^(sent from my (iphone|ipad|android)|sent from mobile|sent from outlook for (ios|android)|get outlook for (ios|android))$/i;
+
+function semaiIsMobileSigEl(el) {
+  const text = (el.textContent || "").trim();
+  return SEMAI_MOBILE_SIG_RE.test(text);
 }
 
 // ── Primary sender-name anchor ────────────────────────────────────────────────
@@ -453,8 +554,16 @@ function semaiCleanBodyClone(bodyEl, senderFirstName) {
   if (anchor) removeFromAndAfter(anchor);
 
   // 6b. Strip repeated-name contact cards
-  const repeatedNameAnchor = semaiFindRepeatedNameSignatureAnchor(clone, senderFirstName);
+  // Support both string and array of tokens for name detection
+  const nameTokensForClone = Array.isArray(senderFirstName) ? senderFirstName
+    : (senderFirstName ? [senderFirstName] : []);
+  const cloneNameArg = nameTokensForClone.length > 0 ? nameTokensForClone : senderFirstName;
+  const repeatedNameAnchor = semaiFindRepeatedNameSignatureAnchor(clone, cloneNameArg);
   if (repeatedNameAnchor) removeFromAndAfter(repeatedNameAnchor);
+
+  // 6c. Strip standalone contact cards (name + credentials, no sign-off)
+  const standaloneCard = semaiFindStandaloneContactCard(clone, cloneNameArg);
+  if (standaloneCard) removeFromAndAfter(standaloneCard);
 
   // 7. Strip specific nested-div contact-card signatures
   const nestedDivSig = semaiFindNestedDivSignature(clone);
@@ -469,6 +578,11 @@ function semaiCleanBodyClone(bodyEl, senderFirstName) {
     if (!(last.textContent || "").trim()) last.remove();
     else break;
   }
+
+  // 10. Remove mobile auto-signature lines
+  clone.querySelectorAll("p, div, span, td").forEach(el => {
+    if (semaiIsMobileSigEl(el)) el.remove();
+  });
 
   return clone.innerHTML.trim();
 }
@@ -697,14 +811,124 @@ const lamPassed = runTest(
   ]
 );
 
+// ─── Test case 5: Daniel Drane no-signoff variant ──────────────────────────────
+// Short body "All great ideas!" followed directly by contact card — NO lowercase
+// "daniel" sign-off before the contact card.
+const danielNoSignoffHtml = `<div visibility="hidden"><div>
+<div lang="en-US" style="word-wrap:break-word;">
+<div>
+<p style="font-size:11pt;font-family:Calibri,sans-serif;margin:0;">All great ideas!</p>
+<p style="font-size:11pt;font-family:Calibri,sans-serif;margin:0;">&nbsp;</p>
+<div>
+<p style="font-size:11pt;font-family:Calibri,sans-serif;margin:0;">Daniel L. Drane, Ph.D., ABPP(CN)</p>
+<p style="font-size:11pt;font-family:Calibri,sans-serif;margin:0;">Professor of Neurology and Pediatrics</p>
+<p style="font-size:11pt;font-family:Calibri,sans-serif;margin:0;">Emory University School of Medicine</p>
+<p style="font-size:11pt;font-family:Calibri,sans-serif;margin:0;">Woodruff Memorial Research Building</p>
+<p style="font-size:11pt;font-family:Calibri,sans-serif;margin:0;">101 Woodruff Circle, Suite 6111</p>
+<p style="font-size:11pt;font-family:Calibri,sans-serif;margin:0;">Mailstop: 1930-001-1AN</p>
+<p style="font-size:11pt;font-family:Calibri,sans-serif;margin:0;">Atlanta, Georgia 30322</p>
+<p style="font-size:11pt;font-family:Calibri,sans-serif;margin:0;">(404)727-2844 (office)</p>
+<p style="font-size:11pt;font-family:Calibri,sans-serif;margin:0;">ddrane@emory.edu</p>
+<p style="font-size:11pt;font-family:Calibri,sans-serif;margin:0;">&nbsp;</p>
+<p style="font-size:11pt;font-family:Calibri,sans-serif;margin:0;">Affiliate Professor of Neurology</p>
+<p style="font-size:11pt;font-family:Calibri,sans-serif;margin:0;">University of Washington</p></div></div></div></div>
+</div>`;
+
+const danielNoSignoffPassed = runTest(
+  "Daniel Drane no-signoff variant",
+  danielNoSignoffHtml,
+  "daniel",
+  // Must KEEP
+  [
+    "All great ideas!"
+  ],
+  // Must REMOVE
+  [
+    "Daniel L. Drane, Ph.D.",
+    "Professor of Neurology and Pediatrics",
+    "Emory University School of Medicine",
+    "(404)727-2844",
+    "ddrane@emory.edu"
+  ]
+);
+
+// ─── Test case 5: Daniel Drane no-signoff, Last-First sender format ─────────
+// Same contact card as case 4, but sender name is "Drane, Daniel L" (last-first
+// format from Outlook). semaiGetSenderNameTokens would return ["drane", "daniel"].
+// The standalone contact card detector must match "Daniel" at the start of the
+// first line using any of the name tokens.
+const danielLastFirstHtml = `<div visibility="hidden"><div>
+<div lang="en-US" style="word-wrap:break-word;">
+<div>
+<p style="font-size:11pt;font-family:Calibri,sans-serif;margin:0;">All great ideas!</p>
+<p style="font-size:11pt;font-family:Calibri,sans-serif;margin:0;">&nbsp;</p>
+<div>
+<p style="font-size:11pt;font-family:Calibri,sans-serif;margin:0;">Daniel L. Drane, Ph.D., ABPP(CN)</p>
+<p style="font-size:11pt;font-family:Calibri,sans-serif;margin:0;">Professor of Neurology and Pediatrics</p>
+<p style="font-size:11pt;font-family:Calibri,sans-serif;margin:0;">Emory University School of Medicine</p>
+<p style="font-size:11pt;font-family:Calibri,sans-serif;margin:0;">Woodruff Memorial Research Building</p>
+<p style="font-size:11pt;font-family:Calibri,sans-serif;margin:0;">101 Woodruff Circle, Suite 6111</p>
+<p style="font-size:11pt;font-family:Calibri,sans-serif;margin:0;">Mailstop: 1930-001-1AN</p>
+<p style="font-size:11pt;font-family:Calibri,sans-serif;margin:0;">Atlanta, Georgia 30322</p>
+<p style="font-size:11pt;font-family:Calibri,sans-serif;margin:0;">(404)727-2844 (office)</p>
+<p style="font-size:11pt;font-family:Calibri,sans-serif;margin:0;">ddrane@emory.edu</p>
+<p style="font-size:11pt;font-family:Calibri,sans-serif;margin:0;">&nbsp;</p>
+<p style="font-size:11pt;font-family:Calibri,sans-serif;margin:0;">Affiliate Professor of Neurology</p>
+<p style="font-size:11pt;font-family:Calibri,sans-serif;margin:0;">University of Washington</p></div></div></div></div>
+</div>`;
+
+const danielLastFirstPassed = runTest(
+  "Daniel Drane no-signoff, Last-First sender format",
+  danielLastFirstHtml,
+  ["drane", "daniel"],  // simulates semaiGetSenderNameTokens for "Drane, Daniel L"
+  // Must KEEP
+  [
+    "All great ideas!"
+  ],
+  // Must REMOVE
+  [
+    "Daniel L. Drane, Ph.D.",
+    "Professor of Neurology and Pediatrics",
+    "Emory University School of Medicine",
+    "(404)727-2844",
+    "ddrane@emory.edu"
+  ]
+);
+
+// ─── Test case 6: "Sent from my iPhone" mobile auto-signature ────────────────
+// A simple email body ending with just "Sent from my iPhone". The phrase should
+// be stripped; the preceding message text must be kept.
+const mobileAutoSigHtml = `<div>
+<p>Hey, just checking in. Are we still on for Thursday?</p>
+<p>&nbsp;</p>
+<p>Sent from my iPhone</p>
+</div>`;
+
+const mobileAutoSigPassed = runTest(
+  "Sent from my iPhone mobile auto-signature",
+  mobileAutoSigHtml,
+  null,
+  // Must KEEP
+  [
+    "Hey, just checking in. Are we still on for Thursday?"
+  ],
+  // Must REMOVE
+  [
+    "Sent from my iPhone"
+  ]
+);
+
 // ─── Summary ──────────────────────────────────────────────────────────────────
 console.log(`\n${"=".repeat(60)}`);
 console.log("SUMMARY");
 console.log("=".repeat(60));
-console.log(`  Daniel Drane case : ${danielPassed ? "PASS" : "FAIL"}`);
-console.log(`  Leah Ekube case   : ${leahPassed ? "PASS" : "FAIL"}`);
-console.log(`  Mandi Schmitt case: ${mandiPassed ? "PASS" : "FAIL"}`);
-console.log(`  Wilbur Lam case   : ${lamPassed ? "PASS" : "FAIL"}`);
+console.log(`  Daniel Drane case       : ${danielPassed ? "PASS" : "FAIL"}`);
+console.log(`  Daniel no-signoff case  : ${danielNoSignoffPassed ? "PASS" : "FAIL"}`);
+console.log(`  Daniel Last-First case  : ${danielLastFirstPassed ? "PASS" : "FAIL"}`);
+console.log(`  Leah Ekube case         : ${leahPassed ? "PASS" : "FAIL"}`);
+console.log(`  Mandi Schmitt case      : ${mandiPassed ? "PASS" : "FAIL"}`);
+console.log(`  Wilbur Lam case         : ${lamPassed ? "PASS" : "FAIL"}`);
+console.log(`  Mobile auto-sig case    : ${mobileAutoSigPassed ? "PASS" : "FAIL"}`);
 console.log("=".repeat(60));
 
-process.exit(danielPassed && leahPassed && mandiPassed && lamPassed ? 0 : 1);
+process.exit(danielPassed && danielNoSignoffPassed && danielLastFirstPassed && leahPassed && mandiPassed && lamPassed && mobileAutoSigPassed ? 0 : 1);

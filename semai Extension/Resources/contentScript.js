@@ -1,25 +1,3 @@
-// ===== UTIL: find the compose/body element =====
-function getComposeElement() {
-  const candidates = [
-    'div[aria-label="Message body"][contenteditable="true"]',
-    'div[role="textbox"][contenteditable="true"]'
-  ];
-
-  for (const sel of candidates) {
-    const el = document.querySelector(sel);
-    if (el) return el;
-  }
-
-  const fallbacks = document.querySelectorAll(
-    'div[role="textbox"][contenteditable="true"]'
-  );
-  if (fallbacks.length > 0) {
-    return fallbacks[fallbacks.length - 1];
-  }
-
-  return null;
-}
-
 function semaiIsVisibleElement(el) {
   if (!(el instanceof Element)) return false;
   const rect = el.getBoundingClientRect();
@@ -27,27 +5,119 @@ function semaiIsVisibleElement(el) {
   return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none";
 }
 
-function semaiWaitForComposeElement(timeoutMs = 6000) {
+function semaiLooksLikeComposeElement(el) {
+  if (!(el instanceof HTMLElement)) return false;
+  if (!semaiIsVisibleElement(el)) return false;
+
+  const ariaLabel = (el.getAttribute("aria-label") || "").toLowerCase();
+  const role = (el.getAttribute("role") || "").toLowerCase();
+  const isEditable = el.isContentEditable || el.getAttribute("contenteditable") === "true";
+  const isTextbox = role === "textbox" || el.getAttribute("aria-multiline") === "true";
+  const looksLikeMessageBody =
+    ariaLabel.includes("message body") ||
+    ariaLabel.includes("compose") ||
+    ariaLabel.includes("reply");
+
+  if (!isEditable) return false;
+  if (looksLikeMessageBody) return true;
+  if (isTextbox) return true;
+
+  return !!el.closest('[aria-label*="Message body" i], [data-app-section="MailCompose"]');
+}
+
+function semaiGetComposeCandidates() {
+  const selector = [
+    'div[aria-label="Message body"][contenteditable="true"]',
+    'div[aria-label*="Message body" i][contenteditable="true"]',
+    'div[role="textbox"][contenteditable="true"]',
+    '[aria-label*="compose" i][contenteditable="true"]',
+    '[aria-label*="reply" i][contenteditable="true"]',
+    '[contenteditable="true"][aria-multiline="true"]',
+    '[data-contents="true"] [contenteditable="true"]',
+    '[data-lexical-editor="true"][contenteditable="true"]'
+  ].join(", ");
+
+  return Array.from(document.querySelectorAll(selector)).filter(semaiLooksLikeComposeElement);
+}
+
+// ===== UTIL: find the compose/body element =====
+function getComposeElement() {
+  const candidates = semaiGetComposeCandidates();
+  if (candidates.length > 0) {
+    return candidates[candidates.length - 1];
+  }
+
+  const allEditable = Array.from(document.querySelectorAll('[contenteditable="true"], [role="textbox"]'))
+    .filter(semaiLooksLikeComposeElement);
+  if (allEditable.length > 0) {
+    return allEditable[allEditable.length - 1];
+  }
+
+  return null;
+}
+
+function semaiWaitForComposeElement(timeoutMs = 12000) {
   return new Promise((resolve, reject) => {
     const startedAt = Date.now();
+    let observer = null;
+    let intervalId = null;
+
+    const cleanup = () => {
+      if (observer) {
+        observer.disconnect();
+        observer = null;
+      }
+      if (intervalId) {
+        window.clearInterval(intervalId);
+        intervalId = null;
+      }
+    };
 
     const check = () => {
       const composeEl = getComposeElement();
       if (composeEl) {
+        cleanup();
         resolve(composeEl);
         return;
       }
 
       if (Date.now() - startedAt >= timeoutMs) {
+        cleanup();
         reject(new Error("Outlook reply box did not open in time."));
         return;
       }
-
-      window.setTimeout(check, 120);
     };
 
     check();
+
+    observer = new MutationObserver(check);
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["aria-label", "contenteditable", "role", "style", "class"]
+    });
+
+    intervalId = window.setInterval(check, 150);
   });
+}
+
+function semaiActivateElement(el) {
+  if (!(el instanceof HTMLElement)) return;
+
+  el.focus();
+
+  ["pointerdown", "mousedown", "pointerup", "mouseup", "click"].forEach((eventName) => {
+    el.dispatchEvent(new MouseEvent(eventName, {
+      bubbles: true,
+      cancelable: true,
+      view: window
+    }));
+  });
+
+  if (typeof el.click === "function") {
+    el.click();
+  }
 }
 
 function semaiFindReplyAllButton() {
@@ -127,7 +197,7 @@ async function semaiOpenReplyAllCompose() {
     throw new Error("Reply all button not found in Outlook.");
   }
 
-  replyAllBtn.click();
+  semaiActivateElement(replyAllBtn);
   composeEl = await semaiWaitForComposeElement();
   return composeEl;
 }
@@ -870,7 +940,14 @@ function semaiIsEntireBodySignature(clone, senderFirstName) {
   return true;
 }
 
-function semaiFindRepeatedNameSignatureAnchor(container, senderFirstName) {
+function semaiFindRepeatedNameSignatureAnchor(container, senderFirstNameOrTokens) {
+  // Accept either a single string (backward compat) or an array of tokens
+  const nameTokens = Array.isArray(senderFirstNameOrTokens)
+    ? senderFirstNameOrTokens
+    : (senderFirstNameOrTokens ? [senderFirstNameOrTokens.toLowerCase()] : []);
+  // Pass first token (or null) to semaiLooksLikeNameLine for backward compat
+  const senderFirstName = nameTokens.length > 0 ? nameTokens[0] : null;
+
   const blocks = Array.from(container.querySelectorAll("p, div, table, td"))
     .filter((el) => semaiLooksLikeCompactBlock(el));
   if (blocks.length < 3) return null;
@@ -878,7 +955,11 @@ function semaiFindRepeatedNameSignatureAnchor(container, senderFirstName) {
   const startAt = Math.max(0, blocks.length - 24);
   for (let i = startAt; i < blocks.length; i++) {
     const currentText = (blocks[i].innerText || blocks[i].textContent || "").trim();
-    if (!semaiLooksLikeNameLine(currentText, senderFirstName)) continue;
+    // Check if name line matches ANY token
+    const matchesAnyToken = nameTokens.length > 0
+      ? nameTokens.some(token => semaiLooksLikeNameLine(currentText, token))
+      : semaiLooksLikeNameLine(currentText, null);
+    if (!matchesAnyToken) continue;
 
     const currentTokens = semaiGetNameTokens(currentText);
     if (currentTokens.length === 0) continue;
@@ -926,6 +1007,98 @@ function semaiFindRepeatedNameSignatureAnchor(container, senderFirstName) {
         return cutEl;
       }
     }
+  }
+
+  return null;
+}
+
+// ── Standalone contact-card detection (no preceding sign-off required) ────────
+// Detects a contact card block by its own signals: sender's first name with
+// credentials (Ph.D., M.D., etc.), plus contact signals (phone, email, address,
+// title, institution). Used when there is no lowercase sign-off like "daniel"
+// before the contact card — the message goes directly from body text to card.
+const SEMAI_CREDENTIALS_RE = /\b(ph\.?d|m\.?d|m\.?s|m\.?a|m\.?b\.?a|j\.?d|ed\.?d|d\.?o|r\.?n|b\.?s|b\.?a|abpp|faes|faan|fana|facs|frcp|lcsw|lpc|lmft|cpa|esq|pe)\b/i;
+
+function semaiFindStandaloneContactCard(container, senderFirstNameOrTokens) {
+  // Accept either a single string (backward compat) or an array of tokens
+  const nameTokens = Array.isArray(senderFirstNameOrTokens)
+    ? senderFirstNameOrTokens
+    : (senderFirstNameOrTokens ? [senderFirstNameOrTokens.toLowerCase()] : []);
+  if (nameTokens.length === 0) return null;
+
+  // Collect candidate block elements
+  const blocks = Array.from(container.querySelectorAll("p, div, table, td"))
+    .filter(el => {
+      const text = (el.innerText || el.textContent || "").trim();
+      return text && text.length <= 600;
+    });
+
+  if (blocks.length < 2) return null;
+
+  for (let i = 0; i < blocks.length; i++) {
+    const el = blocks[i];
+    const text = (el.innerText || el.textContent || "").trim();
+    if (!text) continue;
+
+    const lines = text.split(/\r?\n|\r/).map(l => l.trim()).filter(Boolean);
+    if (lines.length === 0) continue;
+
+    const firstLine = lines[0];
+
+    // First line must start with ANY sender name token (case insensitive)
+    const firstLineLower = firstLine.toLowerCase();
+    const matchedToken = nameTokens.find(token => firstLineLower.startsWith(token.toLowerCase()));
+    if (!matchedToken) continue;
+    const charAfter = firstLine[matchedToken.length];
+    if (charAfter && !/[\s,.]/.test(charAfter)) continue;
+
+    // Must have credentials OR a professional title on the first line or nearby lines
+    const hasCredentials = SEMAI_CREDENTIALS_RE.test(firstLine);
+    const hasTitle = lines.length >= 2 && SEMAI_SIGNATURE_TITLE_RE.test(lines.slice(0, 3).join(" "));
+    if (!hasCredentials && !hasTitle) continue;
+
+    // Gather text from this block and following blocks for contact signal counting
+    let signalText = text;
+    let signalEls = [el];
+    for (let k = i + 1; k < Math.min(blocks.length, i + 10); k++) {
+      const sibText = (blocks[k].innerText || blocks[k].textContent || "").trim();
+      if (!sibText) continue;
+      // Stop if we hit a block that's not a descendant/sibling of the same container
+      if (!el.parentElement || !el.parentElement.contains(blocks[k])) {
+        // Also include blocks at the same level or deeper
+        if (!container.contains(blocks[k])) break;
+      }
+      signalText += "\n" + sibText;
+      signalEls.push(blocks[k]);
+    }
+
+    const signalWrapper = document.createElement("div");
+    signalEls.forEach(e => signalWrapper.appendChild(e.cloneNode(true)));
+
+    const signalCount = semaiCountContactSignals(signalText, signalWrapper);
+    if (signalCount < 2) continue;
+
+    // Found a standalone contact card — walk up to find the right cut point
+    // We want to cut at the level where the body text and contact card are siblings
+    let cutEl = el;
+    let walker = el;
+    while (walker && walker !== container) {
+      const parent = walker.parentElement;
+      if (!parent || parent === container) break;
+      // If the parent has other children that contain non-signature body text,
+      // cut at this level (walker), not higher
+      const siblings = Array.from(parent.children);
+      const hasBodyTextSibling = siblings.some(sib => {
+        if (sib === walker) return false;
+        const sibText = (sib.innerText || sib.textContent || "").trim();
+        // A sibling with real body text (not just whitespace/nbsp)
+        return sibText.length > 0 && sibText !== "\u00a0";
+      });
+      if (hasBodyTextSibling) { cutEl = walker; break; }
+      walker = parent;
+    }
+
+    return cutEl;
   }
 
   return null;
@@ -1012,6 +1185,10 @@ function semaiFirstNameFromDisplayName(displayName) {
 // for known sender-name elements. Returns a lowercase first name or null.
 function semaiGetSenderFirstName(bodyEl) {
   const selectors = [
+    // Outlook Fluent UI — sender name span (confirmed from live DOM)
+    '.OZZZK',
+    // Outlook Web — "From: Drane, Daniel L" aria-label span
+    '[aria-label^="From:"]',
     // Outlook Web (office.com / office365.com) — Fluent UI persona
     '.ms-Persona-primaryText',
     '[class*="personaName" i]',
@@ -1022,7 +1199,7 @@ function semaiGetSenderFirstName(bodyEl) {
     '[class*="senderName" i]',
     '[class*="sender-name" i]',
     '[class*="fromAddress" i]',
-    // Aria labels on contact buttons ("Michael T. Treadway")
+    // Last resort: aria labels on contact buttons — broad, may match toolbar buttons
     'button[aria-label]:not([aria-label=""])',
   ];
 
@@ -1045,6 +1222,47 @@ function semaiGetSenderFirstName(bodyEl) {
     }
   }
   return null;
+}
+
+// Extract ALL meaningful name tokens from the sender info.
+// For "Drane, Daniel L" returns ["drane", "daniel"].
+// For "Daniel Drane" returns ["daniel", "drane"].
+// Strips single-letter initials like "L".
+function semaiGetSenderNameTokens(bodyEl) {
+  const selectors = [
+    // Outlook Fluent UI — sender name span (confirmed from live DOM)
+    '.OZZZK',
+    // Outlook Web — "From: Drane, Daniel L" aria-label span
+    '[aria-label^="From:"]',
+    '.ms-Persona-primaryText',
+    '[class*="personaName" i]',
+    '[class*="persona-name" i]',
+    '[data-testid="senderName"]',
+    '[data-testid="sender-name"]',
+    '[class*="senderName" i]',
+    '[class*="sender-name" i]',
+    '[class*="fromAddress" i]',
+    // Last resort: broad — may match toolbar buttons
+    'button[aria-label]:not([aria-label=""])',
+  ];
+
+  let ancestor = bodyEl.parentElement;
+  for (let d = 0; d < 12 && ancestor; d++, ancestor = ancestor.parentElement) {
+    for (const sel of selectors) {
+      try {
+        const found = ancestor.querySelector(sel);
+        if (!found || found.contains(bodyEl)) continue;
+        const raw = (found.getAttribute("aria-label") || found.innerText || found.textContent || "").trim();
+        const cleaned = raw.replace(/^from[:\s]+/i, "");
+        // Split on commas, spaces, angle brackets, parens — get all tokens
+        const tokens = cleaned.split(/[\s,<(@]+/)
+          .map(t => t.replace(/[^A-Za-z]/g, "").toLowerCase())
+          .filter(t => t.length >= 2); // strip single-letter initials
+        if (tokens.length > 0) return tokens;
+      } catch (e) { /* ignore invalid selectors */ }
+    }
+  }
+  return [];
 }
 
 // Primary sender-name anchor strategy.
@@ -1127,6 +1345,17 @@ function semaiFindSenderAnchor(body, senderName) {
   return null;
 }
 
+// ── Mobile auto-signature patterns ──────────────────────────────────────────
+// Matches short standalone lines like "Sent from my iPhone" that appear at the
+// end of emails and should be stripped as auto-signatures.
+const SEMAI_MOBILE_SIG_RE = /^(sent from my (iphone|ipad|android)|sent from mobile|sent from outlook for (ios|android)|get outlook for (ios|android))$/i;
+
+// Returns true if el contains ONLY a mobile auto-signature phrase (nothing else).
+function semaiIsMobileSigEl(el) {
+  const text = (el.innerText || el.textContent || "").trim();
+  return SEMAI_MOBILE_SIG_RE.test(text);
+}
+
 function semaiStripSignature(body) {
   if (body.dataset.semaiSigStripped) return;
   // Save original HTML before we mutate it — used by chat view
@@ -1135,7 +1364,8 @@ function semaiStripSignature(body) {
 
   // Fetch sender name once — used by multiple strategies below
   const senderName = semaiGetSenderFirstName(body);
-  semaiNativeLog(`[semai-sig] stripSignature: senderName="${senderName}"`);
+  const senderNameTokens = semaiGetSenderNameTokens(body);
+  semaiNativeLog(`[semai-sig] stripSignature: senderName="${senderName}" tokens=${JSON.stringify(senderNameTokens)}`);
 
   // ── Strategy 0: Entire body is a compact branded signature ──────────────
   // Handles emails that have no message body at all — just name/title/logo.
@@ -1214,6 +1444,24 @@ function semaiStripSignature(body) {
   }
   semaiNativeLog(`[semai-sig] Strategy 5 skipped (no nested-div signature found)`);
 
+  // ── Strategy 5b: Repeated-name contact cards ─────────────────────────
+  const nameTokensForDetection = senderNameTokens.length > 0 ? senderNameTokens : senderName;
+  const repeatedNameAnchor = semaiFindRepeatedNameSignatureAnchor(body, nameTokensForDetection);
+  if (repeatedNameAnchor) {
+    semaiCollapseFrom(repeatedNameAnchor);
+    semaiLog("[semai] Signature hidden via repeated-name anchor");
+    return;
+  }
+
+  // ── Strategy 5c: Standalone contact card (name + credentials) ────────
+  // Catches contact cards that follow body text directly, with no sign-off.
+  const standaloneCard = semaiFindStandaloneContactCard(body, nameTokensForDetection);
+  if (standaloneCard) {
+    semaiCollapseFrom(standaloneCard);
+    semaiLog("[semai] Signature hidden via standalone contact card");
+    return;
+  }
+
   // ── Strategy 6: Heuristic — contact-card block near the bottom ───────
   // Last resort: a block with 5+ short lines containing phone/URL/social.
   const children = Array.from(body.children);
@@ -1227,7 +1475,19 @@ function semaiStripSignature(body) {
       break;
     }
   }
-  if (!strategy6Hit) semaiNativeLog(`[semai-sig] Strategy 6 skipped (no heuristic match) — signature NOT detected`);
+  if (!strategy6Hit) semaiNativeLog(`[semai-sig] Strategy 6 skipped (no heuristic match)`);
+
+  // ── Strategy 7: Mobile auto-signature lines ──────────────────────────
+  // Collapses from the first mobile auto-sig element found in the last few
+  // children (e.g. "Sent from my iPhone").
+  const allChildren = Array.from(body.children);
+  for (let i = allChildren.length - 1; i >= Math.max(0, allChildren.length - 5); i--) {
+    if (semaiIsMobileSigEl(allChildren[i])) {
+      semaiNativeLog(`[semai-sig] Strategy 7 (mobile auto-sig): collapsing from child[${i}]`);
+      semaiCollapseFrom(allChildren[i]);
+      break;
+    }
+  }
 }
 
 // ===== CHAT VIEW ============================================================
@@ -1349,14 +1609,6 @@ function semaiSetReportModeStatus(overlay, message, tone = "neutral") {
   status.dataset.tone = tone;
 }
 
-function semaiSetReportModeHint(overlay, message = "") {
-  const hint = overlay?.querySelector("#semai-chat-report-hint");
-  if (!hint) return;
-
-  hint.textContent = message;
-  hint.hidden = !message;
-}
-
 function semaiHandleReportModeKeydown(event) {
   if (event.key !== "Escape" || !semaiReportModeOverlay) return;
 
@@ -1372,7 +1624,6 @@ function semaiExitReportMode(overlay, statusMessage, tone = "neutral") {
   document.removeEventListener("keydown", semaiHandleReportModeKeydown, true);
   semaiReportModeOverlay = null;
   semaiClearReportHover();
-  semaiSetReportModeHint(overlay, "");
 
   const reportButton = overlay.querySelector("#semai-chat-report-issue-btn");
   if (reportButton) {
@@ -1401,14 +1652,9 @@ function semaiEnterReportMode(overlay) {
     reportButton.classList.add("semai-chat-report-issue-btn-active");
   }
 
-  semaiSetReportModeHint(
-    overlay,
-    "Hover an email, click to report it, or press Esc to cancel."
-  );
-
   semaiSetReportModeStatus(
     overlay,
-    "Report mode is on.",
+    "Hover an email, click to report it, or press Esc to cancel.",
     "report"
   );
 }
@@ -1972,13 +2218,20 @@ function semaiCleanBodyClone(bodyEl, senderFirstName) {
   }
 
   // ── 6b. Strip repeated-name contact cards with 2+ contact signals ──────
-  const repeatedNameAnchor = semaiFindRepeatedNameSignatureAnchor(clone, senderFirstName);
+  const nameTokensForClone = Array.isArray(senderFirstName) ? senderFirstName
+    : (senderFirstName ? [senderFirstName] : []);
+  const cloneNameArg = nameTokensForClone.length > 0 ? nameTokensForClone : senderFirstName;
+  const repeatedNameAnchor = semaiFindRepeatedNameSignatureAnchor(clone, cloneNameArg);
   if (repeatedNameAnchor) {
-    semaiNativeLog(`[semai-sig] cleanBodyClone step 6b (repeated-name anchor): removing from [${(repeatedNameAnchor).tagName || ""}${(repeatedNameAnchor).className ? "." + (repeatedNameAnchor).className.toString().split(" ")[0] : ""}]`);
+    semaiNativeLog(`[semai-sig] cleanBodyClone step 6b (repeated-name anchor): removing from [${(repeatedNameAnchor).tagName || ""}]`);
     removeFromAndAfter(repeatedNameAnchor);
   } else {
     semaiNativeLog(`[semai-sig] cleanBodyClone step 6b: no repeated-name anchor found`);
   }
+
+  // ── 6c. Strip standalone contact cards (name + credentials, no sign-off) ──
+  const standaloneCard = semaiFindStandaloneContactCard(clone, cloneNameArg);
+  if (standaloneCard) removeFromAndAfter(standaloneCard);
 
   // ── 7. Strip specific nested-div contact-card signatures directly ──────
   const nestedDivSig = semaiFindNestedDivSignature(clone);
@@ -2002,6 +2255,13 @@ function semaiCleanBodyClone(bodyEl, senderFirstName) {
       break;
     }
   }
+
+  // ── 10. Remove mobile auto-signature lines ──
+  // Remove any element whose full text matches a mobile auto-sig phrase exactly,
+  // e.g. "Sent from my iPhone". Only remove elements that contain nothing else.
+  clone.querySelectorAll("p, div, span, td").forEach(el => {
+    if (semaiIsMobileSigEl(el)) el.remove();
+  });
 
   return clone.innerHTML.trim();
 }
@@ -2274,7 +2534,6 @@ function semaiCreateChatOverlay(messages, subject) {
         >
           Report issue
         </button>
-        <span id="semai-chat-report-hint" class="semai-chat-report-hint" hidden></span>
         <button
           id="semai-chat-view-toggle-btn"
           class="semai-chat-view-toggle-btn"
@@ -2289,9 +2548,6 @@ function semaiCreateChatOverlay(messages, subject) {
             </svg>
           </span>
         </button>
-        <button id="semai-chat-reply-draft-btn" class="semai-chat-reply-draft-btn" type="button">
-          Draft
-        </button>
         <button id="semai-chat-reply-send-btn" class="semai-chat-reply-btn" type="button">
           Reply all
         </button>
@@ -2302,7 +2558,6 @@ function semaiCreateChatOverlay(messages, subject) {
   const replyInput = composer.querySelector("#semai-chat-reply-input");
   const reportIssueBtn = composer.querySelector("#semai-chat-report-issue-btn");
   const viewToggleBtn = composer.querySelector("#semai-chat-view-toggle-btn");
-  const draftBtn = composer.querySelector("#semai-chat-reply-draft-btn");
   const replyBtn = composer.querySelector("#semai-chat-reply-send-btn");
 
   reportIssueBtn.addEventListener("click", () => {
@@ -2311,7 +2566,6 @@ function semaiCreateChatOverlay(messages, subject) {
   viewToggleBtn.addEventListener("click", () => {
     semaiToggleOverlayView(overlay);
   });
-  draftBtn.addEventListener("click", semaiDraftReplyAllFromChat);
   replyBtn.addEventListener("click", semaiSendReplyAllFromChat);
   replyInput.addEventListener("input", () => {
     if (overlay._semaiReadingPane) {
