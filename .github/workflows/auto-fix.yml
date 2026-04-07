@@ -4,9 +4,7 @@ on:
   issues:
     types: [opened, labeled]
 
-# Only run when the issue has the "auto-fix" label.
-# You can add this label automatically on issue creation via another workflow,
-# or manually triage which issues should trigger the loop.
+# Only runs when the issue carries the "auto-fix" label.
 jobs:
   auto-fix:
     if: contains(github.event.issue.labels.*.name, 'auto-fix')
@@ -25,8 +23,8 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Install test dependencies
-        run: npm install jsdom
+      - name: Install dependencies
+        run: npm install
 
       # ── 3. Baseline — verify tests pass before we touch anything ───────────
       - name: Run baseline tests
@@ -44,151 +42,135 @@ jobs:
           ISSUE_TITLE: ${{ github.event.issue.title }}
           ISSUE_BODY: ${{ github.event.issue.body }}
         run: |
-          set -e
+          set -euo pipefail
 
           MAX_ATTEMPTS=3
           ATTEMPT=0
           SUCCESS=false
 
-          # Collect source files to send as context
-          SOURCE_CONTEXT=$(cat \
-            "semai Extension/Resources/contentScript.js" \
-            "semai Extension/Resources/background.js" \
-            "semai Extension/Resources/content.js" \
-            docs/patches/patches.json \
-            tests/test-cases.json \
-          )
-
           while [ $ATTEMPT -lt $MAX_ATTEMPTS ] && [ "$SUCCESS" = "false" ]; do
             ATTEMPT=$((ATTEMPT + 1))
             echo "::group::Attempt $ATTEMPT / $MAX_ATTEMPTS"
 
-            # ── Build Claude prompt ────────────────────────────────────────
+            # ── Build prompt (written to file — avoids all shell-quoting issues) ──
             FAILING_TESTS=$(cat /tmp/baseline.json 2>/dev/null || echo '{}')
-            PREV_ATTEMPT_NOTES=""
-            if [ -f /tmp/prev_attempt.txt ]; then
-              PREV_ATTEMPT_NOTES="Previous attempt notes: $(cat /tmp/prev_attempt.txt)"
-            fi
 
-            PROMPT="You are a self-healing Safari Web Extension auto-fix engine.
-
-## Bug report
-Title: ${ISSUE_TITLE}
-Body:
-${ISSUE_BODY}
-
-## Failing tests (JSON)
-${FAILING_TESTS}
-
-## Source context
-\`\`\`
-${SOURCE_CONTEXT}
-\`\`\`
-
-${PREV_ATTEMPT_NOTES}
-
-## Task
-1. Analyse the bug report and failing tests.
-2. Propose a minimal fix. The fix may be:
-   - A change to an existing source file (output the full updated file contents), OR
-   - A new entry for docs/patches/patches.json (hotpatch), OR
-   - Both.
-3. Also propose a new test case entry for tests/test-cases.json that would catch this bug.
+            # Start with static template (single-quoted heredoc = no expansion)
+            cat > /tmp/claude_prompt.txt << 'PROMPT_EOF'
+You are a self-healing Safari Web Extension auto-fix engine.
 
 Respond with ONLY valid JSON in this exact shape (no markdown fences, no commentary outside JSON):
 {
-  \"explanation\": \"<one paragraph>\",
-  \"files\": [
-    { \"path\": \"<repo-relative path>\", \"content\": \"<full file content as a string>\" }
+  "explanation": "<one paragraph>",
+  "files": [
+    { "path": "<repo-relative path>", "content": "<full updated file content>" }
   ],
-  \"newTestCase\": { <valid test-cases.json case object> },
-  \"patchEntry\": null
-}"
+  "newTestCase": { "<valid test-cases.json case object or null>" },
+  "patchEntry": null
+}
 
-            # ── Call Claude API ────────────────────────────────────────────
-            RESPONSE=$(node -e "
-              const https = require('https');
-              const body = JSON.stringify({
-                model: 'claude-sonnet-4-6',
-                max_tokens: 4096,
-                messages: [{ role: 'user', content: process.env.PROMPT }]
-              });
-              const req = https.request({
-                hostname: 'api.anthropic.com',
-                path: '/v1/messages',
-                method: 'POST',
-                headers: {
-                  'x-api-key': process.env.ANTHROPIC_API_KEY,
-                  'anthropic-version': '2023-06-01',
-                  'content-type': 'application/json',
-                  'content-length': Buffer.byteLength(body)
-                }
-              }, (res) => {
-                let data = '';
-                res.on('data', c => data += c);
-                res.on('end', () => {
-                  const parsed = JSON.parse(data);
-                  process.stdout.write(parsed.content[0].text);
-                });
-              });
-              req.on('error', e => { console.error(e); process.exit(1); });
-              req.write(body);
-              req.end();
-            " PROMPT="$PROMPT")
+Fields:
+- "files": list of files to write. Use [] if no file changes are needed.
+- "newTestCase": a new structured test case that captures this bug (or null).
+- "patchEntry": a new patches.json entry for a runtime hotpatch (or null).
 
-            echo "$RESPONSE" > /tmp/claude_response.json
+PROMPT_EOF
 
-            # ── Apply proposed file changes ────────────────────────────────
+            # Append dynamic content safely (no shell interpretation of file contents)
+            printf '\n## Bug report\nTitle: %s\nBody:\n%s\n' \
+              "$ISSUE_TITLE" "$ISSUE_BODY" >> /tmp/claude_prompt.txt
+
+            printf '\n## Failing tests (JSON)\n%s\n' \
+              "$FAILING_TESTS" >> /tmp/claude_prompt.txt
+
+            if [ -f /tmp/prev_attempt.txt ]; then
+              printf '\n## Previous attempt explanation\n%s\n' \
+                "$(cat /tmp/prev_attempt.txt)" >> /tmp/claude_prompt.txt
+            fi
+
+            # Append source files (content appended as-is — no shell substitution)
+            printf '\n## Source context\n' >> /tmp/claude_prompt.txt
+            for f in \
+              "semai Extension/Resources/background.js" \
+              "semai Extension/Resources/content.js" \
+              "docs/patches/patches.json" \
+              "tests/test-cases.json"; do
+              if [ -f "$f" ]; then
+                printf '\n### %s\n```\n' "$f" >> /tmp/claude_prompt.txt
+                cat "$f" >> /tmp/claude_prompt.txt
+                printf '\n```\n' >> /tmp/claude_prompt.txt
+              fi
+            done
+
+            # Append contentScript.js as a trimmed summary to stay within token budget
+            if [ -f "semai Extension/Resources/contentScript.js" ]; then
+              printf '\n### semai Extension/Resources/contentScript.js (first 200 lines)\n```\n' \
+                >> /tmp/claude_prompt.txt
+              head -200 "semai Extension/Resources/contentScript.js" >> /tmp/claude_prompt.txt
+              printf '\n```\n' >> /tmp/claude_prompt.txt
+            fi
+
+            # ── Call Claude API via helper script ─────────────────────────────
+            node scripts/call-claude.js /tmp/claude_prompt.txt /tmp/claude_response.json
+
+            # ── Apply proposed file changes ────────────────────────────────────
             node -e "
-              const fs = require('fs');
-              const resp = JSON.parse(fs.readFileSync('/tmp/claude_response.json', 'utf8'));
-              if (!resp.files) { console.error('No files in response'); process.exit(1); }
-              for (const f of resp.files) {
-                const dir = require('path').dirname(f.path);
-                fs.mkdirSync(dir, { recursive: true });
-                fs.writeFileSync(f.path, f.content, 'utf8');
+              import { readFileSync, writeFileSync, mkdirSync } from 'fs';
+              import { dirname } from 'path';
+
+              const resp = JSON.parse(readFileSync('/tmp/claude_response.json', 'utf8'));
+
+              for (const f of (resp.files ?? [])) {
+                mkdirSync(dirname(f.path), { recursive: true });
+                writeFileSync(f.path, f.content, 'utf8');
                 console.log('Wrote', f.path);
               }
-              // Append new test case if provided
+
               if (resp.newTestCase) {
                 const tcPath = 'tests/test-cases.json';
-                const tc = JSON.parse(fs.readFileSync(tcPath, 'utf8'));
-                const exists = tc.cases.some(c => c.id === resp.newTestCase.id);
-                if (!exists) {
+                const tc = JSON.parse(readFileSync(tcPath, 'utf8'));
+                if (!tc.cases.some(c => c.id === resp.newTestCase.id)) {
                   tc.cases.push(resp.newTestCase);
-                  fs.writeFileSync(tcPath, JSON.stringify(tc, null, 2) + '\n');
+                  writeFileSync(tcPath, JSON.stringify(tc, null, 2) + '\n');
                   console.log('Added test case', resp.newTestCase.id);
                 }
               }
-              // Append patch entry if provided
+
               if (resp.patchEntry) {
                 const pp = 'docs/patches/patches.json';
-                const pm = JSON.parse(fs.readFileSync(pp, 'utf8'));
-                const exists = pm.patches.some(p => p.id === resp.patchEntry.id);
-                if (!exists) {
+                const pm = JSON.parse(readFileSync(pp, 'utf8'));
+                if (!pm.patches.some(p => p.id === resp.patchEntry.id)) {
                   pm.patches.push(resp.patchEntry);
-                  fs.writeFileSync(pp, JSON.stringify(pm, null, 2) + '\n');
+                  writeFileSync(pp, JSON.stringify(pm, null, 2) + '\n');
                   console.log('Added patch entry', resp.patchEntry.id);
                 }
               }
-            "
+            " --input-type=module
 
-            # ── Validate ───────────────────────────────────────────────────
+            # ── Validate ────────────────────────────────────────────────────
             if node scripts/run-tests.js --format=json > /tmp/test_result.json 2>&1; then
               echo "Tests passed on attempt $ATTEMPT."
               SUCCESS=true
             else
               echo "Tests still failing after attempt $ATTEMPT."
-              cat /tmp/test_result.json > /tmp/prev_attempt.txt
-              # Revert changes so next attempt starts clean
+              # Save explanation for next attempt's context
+              node --input-type=module -e "
+                import { readFileSync } from 'fs';
+                try {
+                  const r = JSON.parse(readFileSync('/tmp/claude_response.json', 'utf8'));
+                  process.stdout.write(r.explanation ?? '(no explanation)');
+                } catch { process.stdout.write('(could not parse response)'); }
+              " > /tmp/prev_attempt.txt 2>/dev/null || true
+              # Revert all changes (tracked + untracked) for next attempt
               git checkout -- .
+              git clean -fd
             fi
 
             echo "::endgroup::"
           done
 
-          echo "success=$SUCCESS" >> $GITHUB_OUTPUT
-          echo "attempts=$ATTEMPT" >> $GITHUB_OUTPUT
+          echo "success=$SUCCESS" >> "$GITHUB_OUTPUT"
+          echo "attempts=$ATTEMPT" >> "$GITHUB_OUTPUT"
 
       # ── 5a. Open PR when fix passes ────────────────────────────────────────
       - name: Open PR with fix
@@ -209,13 +191,8 @@ Respond with ONLY valid JSON in this exact shape (no markdown fences, no comment
           git push origin "$BRANCH"
           gh pr create \
             --title "fix: auto-fix for issue #${ISSUE_NUMBER}" \
-            --body "Automated fix generated by the semai self-healing engine.
-
-          - Model: claude-sonnet-4-6
-          - Attempts: ${{ steps.fix_loop.outputs.attempts }}
-          - All tests pass ✓
-
-          Closes #${ISSUE_NUMBER}" \
+            --body "$(printf 'Automated fix generated by the semai self-healing engine.\n\n- Model: claude-sonnet-4-6\n- Attempts: %s\n- All tests pass ✓\n\nCloses #%s' \
+              "${{ steps.fix_loop.outputs.attempts }}" "$ISSUE_NUMBER")" \
             --head "$BRANCH" \
             --base main
 
@@ -226,12 +203,14 @@ Respond with ONLY valid JSON in this exact shape (no markdown fences, no comment
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
         run: |
-          LAST_RESULT=$(cat /tmp/claude_response.json 2>/dev/null | \
-            node -e "const d=require('fs').readFileSync('/dev/stdin','utf8'); \
-              try { console.log(JSON.parse(d).explanation); } catch { console.log(d.slice(0,500)); }")
-          gh issue comment "$ISSUE_NUMBER" --body "**Auto-fix engine exhausted all ${{ steps.fix_loop.outputs.attempts }} attempts.**
+          EXPLANATION=$(node --input-type=module -e "
+            import { readFileSync } from 'fs';
+            try {
+              const r = JSON.parse(readFileSync('/tmp/claude_response.json', 'utf8'));
+              process.stdout.write(r.explanation ?? '(no explanation provided)');
+            } catch { process.stdout.write('(could not parse last response)'); }
+          " 2>/dev/null || echo "(response unavailable)")
 
-          Last explanation from Claude:
-          > ${LAST_RESULT}
-
-          A human reviewer will need to address this issue manually. The attempted fixes have been discarded."
+          gh issue comment "$ISSUE_NUMBER" --body "$(printf \
+            '**Auto-fix engine exhausted all %s attempt(s).**\n\nLast explanation from Claude:\n> %s\n\nA human reviewer will need to address this issue manually.' \
+            "${{ steps.fix_loop.outputs.attempts }}" "$EXPLANATION")"
