@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "Self-Healing Extension",
+  "version": "1.0.0",
+  "description": "Safari Web Extension with runtime patch loading.",
+  "permissions": ["storage", "alarms"],
+  "host_permissions": [
+    "https://YOUR_USERNAME.github.io/*",
+    "<all_urls>"
+  ],
+  "background": {
+    "scripts": ["background.js"],
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_start"
+    }
+  ]
+}

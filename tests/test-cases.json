@@ -1,0 +1,61 @@
+{
+  "schemaVersion": "1.0.0",
+  "fixtures": {
+    "outlook-thread": {
+      "path": "tests/fixtures/outlook-thread.html",
+      "description": "A minimal Outlook Web thread page skeleton for patch testing."
+    },
+    "outlook-compose": {
+      "path": "tests/fixtures/outlook-compose.html",
+      "description": "Outlook compose window skeleton used to test compose-area patches."
+    }
+  },
+  "cases": [
+    {
+      "id": "fixture-thread-structure",
+      "description": "Outlook thread fixture has the expected container structure.",
+      "fixture": "outlook-thread",
+      "patch": null,
+      "assertions": [
+        {
+          "type": "selectorExists",
+          "selector": "#ReadingPaneContainerId",
+          "message": "Expected #ReadingPaneContainerId in thread fixture."
+        },
+        {
+          "type": "selectorCount",
+          "selector": ".ms-MessageList-itemContent",
+          "count": 2,
+          "message": "Expected 2 message items in thread fixture."
+        }
+      ]
+    },
+    {
+      "id": "patch-injects-element",
+      "description": "A JS patch that adds a sentinel div is correctly applied.",
+      "fixture": "outlook-thread",
+      "patch": "example-noop-v1",
+      "assertions": [
+        {
+          "type": "selectorExists",
+          "selector": "script[data-semai-patch='example-noop-v1']",
+          "message": "Expected injected script tag for patch example-noop-v1."
+        }
+      ]
+    },
+    {
+      "id": "patch-idempotent",
+      "description": "Applying the same patch twice does not produce duplicate injections.",
+      "fixture": "outlook-thread",
+      "patch": "example-noop-v1",
+      "assertions": [
+        {
+          "type": "selectorCount",
+          "selector": "script[data-semai-patch='example-noop-v1']",
+          "count": 1,
+          "message": "Expected exactly 1 script tag for patch example-noop-v1 (idempotency)."
+        }
+      ]
+    }
+  ]
+}

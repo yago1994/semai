@@ -1,0 +1,18 @@
+{
+  "schemaVersion": "1.0.0",
+  "patches": [
+    {
+      "id": "example-noop-v1",
+      "description": "Example no-op patch — demonstrates schema; safe to leave in place.",
+      "urlPattern": "^https://outlook\\.office(365)?\\.com/",
+      "minExtensionVersion": "0.1",
+      "severity": "low",
+      "type": "js",
+      "target": "content",
+      "code": "/* semai patch example-noop-v1 — no operation */",
+      "checksum": "",
+      "rollback": null,
+      "createdAt": "2026-04-06T00:00:00Z"
+    }
+  ]
+}

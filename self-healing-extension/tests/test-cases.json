@@ -1,0 +1,54 @@
+{
+  "$schema": "./test-cases.schema.json",
+  "version": 1,
+  "cases": [
+    {
+      "id": "tc-001-no-main-element",
+      "description": "Page with no <main> tag should still get a patch marker on body",
+      "fixture": "no-main.html",
+      "patchId": "patch-2026-04-06-001",
+      "assertions": [
+        {
+          "type": "selectorExists",
+          "selector": "body[data-she-patched]"
+        },
+        {
+          "type": "attributeEquals",
+          "selector": "body",
+          "attribute": "data-she-patched",
+          "value": "patch-2026-04-06-001"
+        }
+      ]
+    },
+    {
+      "id": "tc-002-with-main-element",
+      "description": "Page with <main> should get the patch marker on <main>, not body",
+      "fixture": "with-main.html",
+      "patchId": "patch-2026-04-06-001",
+      "assertions": [
+        {
+          "type": "selectorExists",
+          "selector": "main[data-she-patched]"
+        },
+        {
+          "type": "selectorNotExists",
+          "selector": "body[data-she-patched]"
+        }
+      ]
+    },
+    {
+      "id": "tc-003-idempotent",
+      "description": "Running the patch twice should not double-mark",
+      "fixture": "with-main.html",
+      "patchId": "patch-2026-04-06-001",
+      "runPatchTimes": 2,
+      "assertions": [
+        {
+          "type": "selectorCount",
+          "selector": "[data-she-patched]",
+          "count": 1
+        }
+      ]
+    }
+  ]
+}
