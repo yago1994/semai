@@ -7,7 +7,24 @@
     "48": "images/icon-48.png",
     "128": "images/icon-128.png"
   },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "permissions": [
+    "storage",
+    "alarms"
+  ],
   "content_scripts": [
+    {
+      "matches": [
+        "https://outlook.office.com/*",
+        "https://outlook.live.com/*",
+        "https://outlook.office365.com/*",
+        "https://outlook.cloud.microsoft/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_start"
+    },
     {
       "matches": [
         "https://outlook.office.com/*",
@@ -26,6 +43,7 @@
     "https://outlook.office365.com/*",
     "https://outlook.cloud.microsoft/*",
     "https://api.openai.com/*",
-    "https://api.github.com/*"
+    "https://api.github.com/*",
+    "https://yago1994.github.io/*"
   ]
 }
