@@ -214,12 +214,15 @@ function semaiIsEntireBodySignature(clone, senderFirstName) {
   if (!text) return false;
 
   // Must be short overall — a real message body would be longer
-  if (text.length > 400) return false;
+  if (text.length > 800) return false;
 
-  // First non-empty line must start with the sender's first name
+  // Sender's first name must appear within the first three non-empty lines.
+  // Checking only the first line is too strict when a company name or logo
+  // text precedes the person's name (e.g. "Acme Corp\nLeah Ekube\nRenewal…").
   const lines = text.split(/(?<=[.!?])\s+|\n+/).map(l => l.trim()).filter(Boolean);
   if (lines.length === 0) return false;
-  if (!lines[0].toLowerCase().startsWith(senderFirstName.toLowerCase())) return false;
+  const firstThreeText = lines.slice(0, 3).join(" ").toLowerCase();
+  if (!firstThreeText.includes(senderFirstName.toLowerCase())) return false;
 
   // Must have at least one URL/image signal in the raw HTML
   const hasUrl = SEMAI_URL_RE.test(text) || !!clone.querySelector("img, a[href]");
@@ -331,7 +334,8 @@ function semaiFindSenderAnchor(body, senderName) {
     if (firstLine.toLowerCase().startsWith(senderName)) {
       const charAfter = firstLine[senderName.length];
       if (!charAfter || /[\s,.]/.test(charAfter)) {
-        if (lines.length >= 2 && lines.every(l => l.length <= 80)) return kids[i];
+        const longLines = lines.filter(l => l.length > 120).length;
+        if (lines.length >= 2 && longLines <= 2) return kids[i];
       }
     }
   }
@@ -650,6 +654,49 @@ const leahPassed = runTest(
   ]
 );
 
+// ─── Test case 4: Wilbur Lam / last-name-first display + long dept lines ───────
+// Sender displayed as "Lam, Wilbur" in Outlook.  The signature starts with
+// "Wilbur A. Lam, MD, PhD" and contains a line exceeding 80 chars.
+// senderFirstName should resolve to "wilbur" (not "lam" or "lam,").
+const lamOriginalHtml = `<div visibility="hidden"><div>
+<div dir="ltr">
+<div dir="ltr">
+<div lang="en-US" style="word-wrap:break-word;">
+<div>
+<p style="font-size:12pt;font-family:Aptos,sans-serif;margin:0;"><span style="font-size:11pt;font-family:Calibri,sans-serif;">Let's change my stuff so that it's more catered to the DigitalStudio. See below and feel free to edit</span></p>
+<p style="font-size:12pt;font-family:Aptos,sans-serif;margin:0;"><span style="font-size:11pt;font-family:Calibri,sans-serif;">&nbsp;</span></p>
+<p style="font-size:12pt;font-family:Aptos,sans-serif;margin:0;"><span style="font-size:11pt;font-family:Calibri,sans-serif;">Dr. Lam is a Professor in the Department of Pediatrics, Division of Pediatric Hematology/Oncology and Dept of Biomedical Engineering, Emory University and Georgia Institute of Technology. His unique background as a physician-scientist-engineer trained in clinical pediatric hematology/oncology as well as bioengineering makes him an ideal Director of the DigitalStudio.</span></p>
+<p style="font-size:12pt;font-family:Aptos,sans-serif;margin:0;"><span style="font-size:11pt;font-family:Calibri,sans-serif;">&nbsp;</span></p>
+<div>
+<p style="font-size:12pt;font-family:Aptos,sans-serif;margin:0;"><span style="font-size:9pt;">Wilbur A. Lam, MD, PhD</span></p>
+<p style="font-size:12pt;font-family:Aptos,sans-serif;margin:0;"><span style="font-size:9pt;">Professor and W. Paul Bowers Research Chair</span></p>
+<p style="font-size:12pt;font-family:Aptos,sans-serif;margin:0;"><span style="font-size:9pt;">Department of Pediatrics and the Wallace H. Coulter Department of Biomedical Engineering</span></p>
+<p style="font-size:12pt;font-family:Aptos,sans-serif;margin:0;"><span style="font-size:9pt;">Aflac Cancer and Blood Disorders Center at Children's Healthcare of Atlanta</span></p>
+<p style="font-size:12pt;font-family:Aptos,sans-serif;margin:0;"><span style="font-size:9pt;">Director, Center for the Advancement of Diagnostics for a Just Society (ADJUST Center)</span></p>
+<p style="font-size:12pt;font-family:Aptos,sans-serif;margin:0;"><span style="font-size:9pt;">Co-Director, Pediatric Technology Center</span></p>
+<p style="font-size:12pt;font-family:Aptos,sans-serif;margin:0;"><span style="font-size:9pt;">Associate Dean of Innovation, Emory University School of Medicine</span></p>
+<p style="font-size:12pt;font-family:Aptos,sans-serif;margin:0;"><span style="font-size:9pt;">Vice Provost for Entrepreneurship, Emory University</span></p>
+</div></div></div></div></div></div>
+</div>`;
+
+const lamPassed = runTest(
+  "Wilbur Lam / last-name-first display name",
+  lamOriginalHtml,
+  "wilbur",   // semaiFirstNameFromDisplayName("Lam, Wilbur") → "wilbur"
+  // Must KEEP
+  [
+    "Let's change my stuff so that it's more catered to the DigitalStudio",
+    "Dr. Lam is a Professor in the Department of Pediatrics"
+  ],
+  // Must REMOVE
+  [
+    "Wilbur A. Lam, MD, PhD",
+    "Professor and W. Paul Bowers Research Chair",
+    "Wallace H. Coulter Department of Biomedical Engineering",
+    "Vice Provost for Entrepreneurship"
+  ]
+);
+
 // ─── Summary ──────────────────────────────────────────────────────────────────
 console.log(`\n${"=".repeat(60)}`);
 console.log("SUMMARY");
@@ -657,6 +704,7 @@ console.log("=".repeat(60));
 console.log(`  Daniel Drane case : ${danielPassed ? "PASS" : "FAIL"}`);
 console.log(`  Leah Ekube case   : ${leahPassed ? "PASS" : "FAIL"}`);
 console.log(`  Mandi Schmitt case: ${mandiPassed ? "PASS" : "FAIL"}`);
+console.log(`  Wilbur Lam case   : ${lamPassed ? "PASS" : "FAIL"}`);
 console.log("=".repeat(60));
 
-process.exit(danielPassed && leahPassed && mandiPassed ? 0 : 1);
+process.exit(danielPassed && leahPassed && mandiPassed && lamPassed ? 0 : 1);

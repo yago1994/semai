@@ -234,6 +234,16 @@ let semaiCalibrationHoverEl = null;
 let semaiAutoOpenSuppressedSignature = "";
 let semaiPanelDragState = null;
 
+// Sends a log message to the native host so it appears in the Xcode console.
+// Falls back to console.log if the background relay is unavailable.
+function semaiNativeLog(text) {
+  try {
+    browser.runtime.sendMessage({ type: "semaiLog", text });
+  } catch (e) {
+    console.log("[semai-sig]", text);
+  }
+}
+
 function semaiLog(message, details) {
   if (!SEMAI_DEBUG) {
     return;
@@ -839,12 +849,15 @@ function semaiIsEntireBodySignature(clone, senderFirstName) {
   if (!text) return false;
 
   // Must be short overall — a real message body would be longer
-  if (text.length > 400) return false;
+  if (text.length > 800) return false;
 
-  // First non-empty line must start with the sender's first name
+  // Sender's first name must appear within the first three non-empty lines.
+  // Checking only the first line is too strict when a company name or logo
+  // text precedes the person's name (e.g. "Acme Corp\nLeah Ekube\nRenewal…").
   const lines = text.split(/(?<=[.!?])\s+|\n+/).map(l => l.trim()).filter(Boolean);
   if (lines.length === 0) return false;
-  if (!lines[0].toLowerCase().startsWith(senderFirstName.toLowerCase())) return false;
+  const firstThreeText = lines.slice(0, 3).join(" ").toLowerCase();
+  if (!firstThreeText.includes(senderFirstName.toLowerCase())) return false;
 
   // Must have at least one URL/image signal in the raw HTML
   const hasUrl = SEMAI_URL_RE.test(text) || !!clone.querySelector("img, a[href]");
@@ -975,6 +988,25 @@ function semaiFirstSeparatorEl(container, pattern) {
   return null;
 }
 
+// Extracts the true first name from a display name in either "First Last" or
+// "Last, First" format (the latter is common in Outlook when contacts are
+// stored with surname-first ordering, e.g. "Lam, Wilbur").
+function semaiFirstNameFromDisplayName(displayName) {
+  const name = (displayName || "").trim();
+  if (/,/.test(name)) {
+    // "Last, First [Middle]" → take the token right after the comma
+    const afterComma = (name.split(/\s*,\s*/)[1] || "").split(/\s+/)[0];
+    if (afterComma && afterComma.length >= 2 && /^[A-Za-z]/.test(afterComma)) {
+      semaiNativeLog(`[semai-sig] firstNameFromDisplay: "${name}" → "Last, First" format → "${afterComma.toLowerCase()}"`);
+      return afterComma.toLowerCase();
+    }
+  }
+  // "First [Middle] Last" → take the first whitespace-separated token
+  const first = (name.split(/[\s,<(@]+/)[0] || "").toLowerCase();
+  semaiNativeLog(`[semai-sig] firstNameFromDisplay: "${name}" → "First Last" format → "${first}"`);
+  return first;
+}
+
 // Try to extract the sender's first name from Outlook's email header UI.
 // Casts a wide net of selectors then walks up to 12 ancestor levels looking
 // for known sender-name elements. Returns a lowercase first name or null.
@@ -1003,9 +1035,11 @@ function semaiGetSenderFirstName(bodyEl) {
         const raw = (found.getAttribute("aria-label") || found.innerText || found.textContent || "").trim();
         // Strip "From: " prefix if present
         const cleaned = raw.replace(/^from[:\s]+/i, "");
-        const firstName = cleaned.split(/[\s,<(@]+/)[0];
+        const firstName = semaiFirstNameFromDisplayName(cleaned);
+        semaiNativeLog(`[semai-sig] getSenderFirstName: selector="${sel}" raw="${raw}" → firstName="${firstName}"`);
         if (firstName && firstName.length >= 2 && /^[A-Za-z]/.test(firstName)) {
-          return firstName.toLowerCase();
+          semaiNativeLog(`[semai-sig] getSenderFirstName: resolved to "${firstName}"`);
+          return firstName;
         }
       } catch (e) { /* ignore invalid selectors */ }
     }
@@ -1072,14 +1106,20 @@ function semaiFindSenderAnchor(body, senderName) {
 
     // ── Pattern C: sender's full name is the first line of a contact block ──
     // e.g. <p>Michael T. Treadway, PhD<br>Winship Distinguished...<br>...</p>
-    // Guard: all lines must be short so we don't match a paragraph that happens
-    // to start with the sender's name.
+    // Guard: lines must not look like a prose paragraph.  We allow lines up to
+    // 120 chars (academic/medical dept names can exceed 80) but cap at 2 long
+    // lines — a real paragraph would have far more text.
     if (!senderName) continue;
     if (firstLine.toLowerCase().startsWith(senderName)) {
       const charAfter = firstLine[senderName.length];
       if (!charAfter || /[\s,.]/.test(charAfter)) {
-        if (lines.length >= 2 && lines.every(l => l.length <= 80)) {
+        const longLines = lines.filter(l => l.length > 120).length;
+        semaiNativeLog(`[semai-sig] PatternC candidate: firstLine="${firstLine}" senderName="${senderName}" lines=${lines.length} longLines=${longLines}`);
+        if (lines.length >= 2 && longLines <= 2) {
+          semaiNativeLog(`[semai-sig] PatternC MATCH → collapsing from this element`);
           return kids[i];
+        } else {
+          semaiNativeLog(`[semai-sig] PatternC SKIP: lines=${lines.length} longLines=${longLines}`);
         }
       }
     }
@@ -1095,7 +1135,18 @@ function semaiStripSignature(body) {
 
   // Fetch sender name once — used by multiple strategies below
   const senderName = semaiGetSenderFirstName(body);
-  semaiLog("[semai] Sender name", { senderName });
+  semaiNativeLog(`[semai-sig] stripSignature: senderName="${senderName}"`);
+
+  // ── Strategy 0: Entire body is a compact branded signature ──────────────
+  // Handles emails that have no message body at all — just name/title/logo.
+  // Must run after saving semaiOriginalHtml but before any DOM mutation.
+  if (semaiIsEntireBodySignature(body, senderName)) {
+    semaiNativeLog(`[semai-sig] Strategy 0 (compact branded sig): collapsing entire body`);
+    const firstChild = body.firstElementChild;
+    if (firstChild) semaiCollapseFrom(firstChild);
+    return;
+  }
+  semaiNativeLog(`[semai-sig] Strategy 0 skipped (body has real content)`);
 
   // ── Strategy 1: Outlook's labelled signature div ──────────────────────
   // Handles <div id="ms-outlook-mobile-signature">, <div id="Signature">, etc.
@@ -1104,6 +1155,7 @@ function semaiStripSignature(body) {
     '[id="Signature"], [id*="signature" i], [class*="signature" i]'
   );
   if (outlookSig && body.contains(outlookSig)) {
+    semaiNativeLog(`[semai-sig] Strategy 1 (Outlook sig div): found element [${(outlookSig).tagName || ""}${(outlookSig).className ? "." + (outlookSig).className.toString().split(" ")[0] : ""}]`);
     const sepInSig =
       semaiFirstSeparatorEl(outlookSig, /^_{4,}$/) ||
       semaiFirstSeparatorEl(outlookSig, /^--\s*$/) ||
@@ -1119,56 +1171,63 @@ function semaiStripSignature(body) {
         semaiHideEl(outlookSig);
       }
     }
-    semaiLog("[semai] Signature hidden via Outlook sig div");
     return;
   }
+  semaiNativeLog(`[semai-sig] Strategy 1 skipped (no id/class="signature" element)`);
 
   // ── Strategy 2: Sender name anchor (primary heuristic) ───────────────
   // Uses the sender's first name from Outlook's UI to locate their name
   // in the body as a sign-off or contact-block header.
   const anchor = semaiFindSenderAnchor(body, senderName);
   if (anchor) {
+    semaiNativeLog(`[semai-sig] Strategy 2 (sender anchor): collapsing from [${(anchor).tagName || ""}${(anchor).className ? "." + (anchor).className.toString().split(" ")[0] : ""}]`);
     semaiCollapseFrom(anchor);
-    semaiLog("[semai] Signature hidden via sender name anchor", { senderName });
     return;
   }
+  semaiNativeLog(`[semai-sig] Strategy 2 skipped (no sender anchor found for "${senderName}")`);
 
   // ── Strategy 3: RFC "-- " delimiter ──────────────────────────────────
   const dashEl = semaiFirstSeparatorEl(body, /^--\s*$/);
   if (dashEl) {
+    semaiNativeLog(`[semai-sig] Strategy 3 (-- delimiter): collapsing from [${(dashEl).tagName || ""}${(dashEl).className ? "." + (dashEl).className.toString().split(" ")[0] : ""}]`);
     semaiCollapseFrom(dashEl);
-    semaiLog("[semai] Signature hidden via -- delimiter");
     return;
   }
+  semaiNativeLog(`[semai-sig] Strategy 3 skipped (no -- delimiter)`);
 
   // ── Strategy 4: Outlook underscore separator ──────────────────────────
   // <hr> is intentionally excluded: it's also used between quoted replies
   // in email threads and causes entire conversations to be hidden.
   const underscoreEl = semaiFirstSeparatorEl(body, /^_{4,}$/);
   if (underscoreEl) {
+    semaiNativeLog(`[semai-sig] Strategy 4 (____ separator): collapsing from [${(underscoreEl).tagName || ""}${(underscoreEl).className ? "." + (underscoreEl).className.toString().split(" ")[0] : ""}]`);
     semaiCollapseFrom(underscoreEl);
-    semaiLog("[semai] Signature hidden via underscore separator");
     return;
   }
 
   // ── Strategy 5: Specific nested div contact-card signature ────────────
   const nestedDivSig = semaiFindNestedDivSignature(body);
   if (nestedDivSig) {
+    semaiNativeLog(`[semai-sig] Strategy 5 (nested div[dir=ltr]): hiding [${(nestedDivSig).tagName || ""}${(nestedDivSig).className ? "." + (nestedDivSig).className.toString().split(" ")[0] : ""}]`);
     semaiHideEl(nestedDivSig);
-    semaiLog("[semai] Signature hidden via nested div signature");
     return;
   }
+  semaiNativeLog(`[semai-sig] Strategy 5 skipped (no nested-div signature found)`);
 
   // ── Strategy 6: Heuristic — contact-card block near the bottom ───────
   // Last resort: a block with 5+ short lines containing phone/URL/social.
   const children = Array.from(body.children);
+  semaiNativeLog(`[semai-sig] Strategy 6: checking last ${Math.min(6, children.length)} of ${children.length} body children`);
+  let strategy6Hit = false;
   for (let i = children.length - 1; i >= Math.max(0, children.length - 6); i--) {
     if (semaiLooksLikeSig(children[i])) {
+      semaiNativeLog(`[semai-sig] Strategy 6 (heuristic): collapsing from child[${i}] [${(children[i]).tagName || ""}${(children[i]).className ? "." + (children[i]).className.toString().split(" ")[0] : ""}]`);
       semaiCollapseFrom(children[i]);
-      semaiLog("[semai] Signature hidden via heuristic", { childIndex: i });
+      strategy6Hit = true;
       break;
     }
   }
+  if (!strategy6Hit) semaiNativeLog(`[semai-sig] Strategy 6 skipped (no heuristic match) — signature NOT detected`);
 }
 
 // ===== CHAT VIEW ============================================================
@@ -1847,7 +1906,9 @@ function semaiCleanBodyClone(bodyEl, senderFirstName) {
   }
 
   // ── 0a. Short-circuit: if the entire body is a compact branded signature, return empty ──
+  semaiNativeLog(`[semai-sig] cleanBodyClone: senderFirstName="${senderFirstName}" bodyLen=${clone.textContent.length}`);
   if (semaiIsEntireBodySignature(clone, senderFirstName)) {
+    semaiNativeLog(`[semai-sig] cleanBodyClone: Step 0a → entire body is a signature, returning empty`);
     return "";
   }
 
@@ -1903,16 +1964,29 @@ function semaiCleanBodyClone(bodyEl, senderFirstName) {
   // ── 6. Strip sign-off + sender name contact block ──
   // Uses the same anchor logic as the reading-view signature stripper.
   const anchor = semaiFindSenderAnchor(clone, senderFirstName);
-  if (anchor) removeFromAndAfter(anchor);
+  if (anchor) {
+    semaiNativeLog(`[semai-sig] cleanBodyClone step 6 (sender anchor): removing from [${(anchor).tagName || ""}${(anchor).className ? "." + (anchor).className.toString().split(" ")[0] : ""}]`);
+    removeFromAndAfter(anchor);
+  } else {
+    semaiNativeLog(`[semai-sig] cleanBodyClone step 6: no sender anchor for "${senderFirstName}"`);
+  }
 
   // ── 6b. Strip repeated-name contact cards with 2+ contact signals ──────
   const repeatedNameAnchor = semaiFindRepeatedNameSignatureAnchor(clone, senderFirstName);
-  if (repeatedNameAnchor) removeFromAndAfter(repeatedNameAnchor);
+  if (repeatedNameAnchor) {
+    semaiNativeLog(`[semai-sig] cleanBodyClone step 6b (repeated-name anchor): removing from [${(repeatedNameAnchor).tagName || ""}${(repeatedNameAnchor).className ? "." + (repeatedNameAnchor).className.toString().split(" ")[0] : ""}]`);
+    removeFromAndAfter(repeatedNameAnchor);
+  } else {
+    semaiNativeLog(`[semai-sig] cleanBodyClone step 6b: no repeated-name anchor found`);
+  }
 
   // ── 7. Strip specific nested-div contact-card signatures directly ──────
   const nestedDivSig = semaiFindNestedDivSignature(clone);
   if (nestedDivSig) {
+    semaiNativeLog(`[semai-sig] cleanBodyClone step 7 (nested div[dir=ltr]): removing [${(nestedDivSig).tagName || ""}${(nestedDivSig).className ? "." + (nestedDivSig).className.toString().split(" ")[0] : ""}]`);
     nestedDivSig.remove();
+  } else {
+    semaiNativeLog(`[semai-sig] cleanBodyClone step 7: no nested-div signature found`);
   }
 
   // ── 8. Strip closing phrase + name even when no contact block follows ──
@@ -2087,7 +2161,8 @@ function semaiExtractThreadMessages() {
   return bodies.map(bodyEl => {
     const sender = semaiGetMessageSender(bodyEl);
     const timestamp = semaiGetMessageTimestamp(bodyEl);
-    const senderFirstName = (sender.name.split(/\s+/)[0] || "").toLowerCase();
+    const senderFirstName = semaiFirstNameFromDisplayName(sender.name);
+    semaiNativeLog(`[semai-sig] extractThreadMessages: sender.name="${sender.name}" → senderFirstName="${senderFirstName}"`);
     const cleanHtml = semaiCleanBodyClone(bodyEl, senderFirstName);
     const rawHtml = bodyEl.dataset.semaiOriginalHtml || bodyEl.innerHTML;
     const isMe = semaiIsCurrentUser(sender.name, sender.email);
