@@ -1754,32 +1754,36 @@ async function semaiRequestPreviewFix(message, subject, reason) {
   const apiKey = typeof REMOU_ANTHROPIC_API_KEY !== "undefined" ? REMOU_ANTHROPIC_API_KEY : null;
   if (!apiKey) throw new Error("Anthropic API key not configured in secrets.js");
 
-  semaiNativeLog("[semai-preview] Sending PREVIEW_FIX to background.js...");
+  const payload = {
+    reason,
+    cleanHtml: (message.cleanHtml || "").slice(0, 8000),
+    rawHtml: (message.rawHtml || "").slice(0, 8000),
+    senderInfo: message.sender,
+    subject,
+    pageUrl: window.location.href,
+    anthropicApiKey: apiKey,
+  };
 
-  return new Promise((resolve, reject) => {
-    browser.runtime.sendMessage({
+  const payloadSize = JSON.stringify(payload).length;
+  semaiNativeLog("[semai-preview] Sending PREVIEW_FIX to background.js (payload: " + payloadSize + " chars)...");
+
+  let response;
+  try {
+    response = await browser.runtime.sendMessage({
       type: "PREVIEW_FIX",
-      payload: {
-        reason,
-        cleanHtml: message.cleanHtml,
-        rawHtml: message.rawHtml,
-        senderInfo: message.sender,
-        subject,
-        pageUrl: window.location.href,
-        anthropicApiKey: apiKey,
-      }
-    }).then((response) => {
-      semaiNativeLog("[semai-preview] Got response from background.js: ok=" + response?.ok);
-      if (!response?.ok) {
-        reject(new Error(response?.error || "Preview fix failed"));
-        return;
-      }
-      resolve(response);
-    }).catch((err) => {
-      semaiNativeLog("[semai-preview] sendMessage error: " + err.message);
-      reject(new Error("Extension messaging failed: " + err.message));
+      payload,
     });
-  });
+  } catch (err) {
+    semaiNativeLog("[semai-preview] sendMessage threw: " + err.name + ": " + err.message);
+    throw new Error("Extension messaging failed: " + err.message);
+  }
+
+  semaiNativeLog("[semai-preview] Got response from background.js: " + JSON.stringify(response).slice(0, 200));
+
+  if (!response?.ok) {
+    throw new Error(response?.error || "Preview fix failed");
+  }
+  return response;
 }
 
 function semaiInjectPreviewPatch(patchType, patchCode) {
