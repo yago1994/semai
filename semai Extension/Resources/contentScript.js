@@ -1838,33 +1838,67 @@ async function semaiRequestPreviewFix(message, subject, reason) {
     "```",
   ].join("\n");
 
-  const response = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01",
-      "content-type": "application/json",
-    },
-    body: JSON.stringify({
-      model: "claude-sonnet-4-6",
-      max_tokens: 4096,
-      system: SEMAI_PREVIEW_FIX_SYSTEM_PROMPT,
-      tools: [SEMAI_APPLY_FIX_TOOL],
-      tool_choice: { type: "tool", name: "apply_fix" },
-      messages: [{ role: "user", content: userMessage }],
-    }),
-  });
+  const requestBody = {
+    model: "claude-sonnet-4-6",
+    max_tokens: 4096,
+    system: SEMAI_PREVIEW_FIX_SYSTEM_PROMPT,
+    tools: [SEMAI_APPLY_FIX_TOOL],
+    tool_choice: { type: "tool", name: "apply_fix" },
+    messages: [{ role: "user", content: userMessage }],
+  };
 
-  if (!response.ok) {
-    const err = await response.json().catch(() => ({}));
-    throw new Error(err.error?.message || "Anthropic API error " + response.status);
+  semaiNativeLog("[semai-preview] Sending request to Anthropic API...");
+  semaiNativeLog("[semai-preview] API key present: " + (apiKey ? "yes (" + apiKey.slice(0, 12) + "...)" : "no"));
+  semaiNativeLog("[semai-preview] Request body size: " + JSON.stringify(requestBody).length + " chars");
+
+  let response;
+  try {
+    response = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(requestBody),
+    });
+  } catch (fetchErr) {
+    semaiNativeLog("[semai-preview] Fetch threw: " + fetchErr.name + ": " + fetchErr.message);
+    semaiNativeLog("[semai-preview] Stack: " + (fetchErr.stack || "(none)"));
+    throw new Error("Network request failed: " + fetchErr.message + " — check Safari console for CORS or CSP errors.");
   }
 
-  const data = await response.json();
+  semaiNativeLog("[semai-preview] Response status: " + response.status);
+
+  if (!response.ok) {
+    let errBody = "";
+    try { errBody = await response.text(); } catch { errBody = "(could not read body)"; }
+    semaiNativeLog("[semai-preview] Error response body: " + errBody.slice(0, 500));
+    const parsed = (() => { try { return JSON.parse(errBody); } catch { return {}; } })();
+    throw new Error(parsed.error?.message || "Anthropic API error " + response.status + ": " + errBody.slice(0, 200));
+  }
+
+  const rawText = await response.text();
+  semaiNativeLog("[semai-preview] Response size: " + rawText.length + " chars");
+
+  let data;
+  try {
+    data = JSON.parse(rawText);
+  } catch (parseErr) {
+    semaiNativeLog("[semai-preview] JSON parse error: " + parseErr.message);
+    semaiNativeLog("[semai-preview] Raw response start: " + rawText.slice(0, 300));
+    throw new Error("Could not parse Anthropic response as JSON.");
+  }
+
   const toolUse = data.content?.find(
     (block) => block.type === "tool_use" && block.name === "apply_fix"
   );
-  if (!toolUse) throw new Error("Claude did not return a fix suggestion.");
+  if (!toolUse) {
+    semaiNativeLog("[semai-preview] No tool_use block found. Content blocks: " + JSON.stringify((data.content || []).map(b => b.type)));
+    throw new Error("Claude did not return a fix suggestion.");
+  }
+
+  semaiNativeLog("[semai-preview] Got patch: type=" + toolUse.input.patchType + " code=" + (toolUse.input.patchCode || "").length + " chars");
 
   return {
     explanation: toolUse.input.explanation,
