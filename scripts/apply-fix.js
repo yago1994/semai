@@ -14,13 +14,27 @@ const ROOT = path.resolve(__dirname, '..');
 
 const responseFile = process.argv[2] ?? '/tmp/claude_response.json';
 
-let resp;
-try {
-  resp = JSON.parse(fs.readFileSync(responseFile, 'utf8'));
-} catch (e) {
-  console.error(`ERROR: Could not parse ${responseFile}: ${e.message}`);
-  process.exit(1);
+// Fix unrecognized JSON escape sequences (e.g. \. in regex patterns).
+// Valid JSON escapes: \" \\ \/ \b \f \n \r \t \uXXXX — anything else is illegal.
+function fixJsonEscapes(str) {
+  return str.replace(/\\(?!["\\/bfnrtu\d])/g, '\\\\');
 }
+
+function parseJson(str, label) {
+  try {
+    return JSON.parse(str);
+  } catch {
+    try {
+      return JSON.parse(fixJsonEscapes(str));
+    } catch (e2) {
+      console.error(`ERROR: Could not parse ${label}: ${e2.message}`);
+      process.exit(1);
+    }
+  }
+}
+
+let resp;
+resp = parseJson(fs.readFileSync(responseFile, 'utf8'), responseFile);
 
 // Apply file changes
 for (const f of (resp.files ?? [])) {
@@ -33,7 +47,7 @@ for (const f of (resp.files ?? [])) {
 // Append new test case
 if (resp.newTestCase) {
   const tcPath = path.join(ROOT, 'tests/test-cases.json');
-  const tc = JSON.parse(fs.readFileSync(tcPath, 'utf8'));
+  const tc = parseJson(fs.readFileSync(tcPath, 'utf8'), tcPath);
   if (!tc.cases.some((c) => c.id === resp.newTestCase.id)) {
     tc.cases.push(resp.newTestCase);
     fs.writeFileSync(tcPath, JSON.stringify(tc, null, 2) + '\n');
@@ -44,7 +58,7 @@ if (resp.newTestCase) {
 // Append new patch entry
 if (resp.patchEntry) {
   const ppPath = path.join(ROOT, 'docs/patches/patches.json');
-  const pm = JSON.parse(fs.readFileSync(ppPath, 'utf8'));
+  const pm = parseJson(fs.readFileSync(ppPath, 'utf8'), ppPath);
   if (!pm.patches.some((p) => p.id === resp.patchEntry.id)) {
     pm.patches.push(resp.patchEntry);
     fs.writeFileSync(ppPath, JSON.stringify(pm, null, 2) + '\n');

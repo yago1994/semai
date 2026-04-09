@@ -95,6 +95,13 @@ ${sourceContext}
 2. Propose a minimal fix. The fix may be a source file change and/or a new patches.json entry.
 3. Propose a new test case for tests/test-cases.json that captures this specific bug.
 
+## JSON escaping rules
+- Your entire response is a JSON object. ALL backslashes inside JSON strings must be doubled.
+- Regex patterns: write \\\\.com not \\.com, write \\\\d not \\d, etc.
+- A single \\ in the final regex = \\\\\\\\ in your JSON output.
+- Wrong:  "urlPattern": "^https://example\\.com"   (\.  is invalid JSON)
+- Correct: "urlPattern": "^https://example\\\\.com"  (\\\\. decodes to \\. in the string)
+
 ## Constraints for JS patches
 - The test harness runs patch code via eval() against a pre-built jsdom DOM — there is no browser event loop.
 - MutationObserver callbacks will NOT fire for elements that already exist in the DOM when the patch runs.
