@@ -453,6 +453,14 @@ body.semai-calibrating * {
   letter-spacing: 0.02em;
 }
 
+.semai-chat-attachment-badge {
+  align-self: center;
+  flex-shrink: 0;
+  font-size: 15px;
+  line-height: 1;
+  opacity: 0.9;
+}
+
 /* Chat bubble */
 .semai-chat-bubble {
   max-width: 70%;

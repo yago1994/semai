@@ -1524,6 +1524,54 @@ function semaiEscapeHtml(text) {
     .replace(/'/g, "&#39;");
 }
 
+const SEMAI_GITHUB_ISSUE_SECTION_LIMIT = 12000;
+const SEMAI_GITHUB_ISSUE_BODY_LIMIT = 60000;
+
+function semaiTrimForGitHubIssue(value, maxLength = SEMAI_GITHUB_ISSUE_SECTION_LIMIT) {
+  const text = String(value || "");
+  if (text.length <= maxLength) {
+    return text;
+  }
+
+  return `${text.slice(0, maxLength)}\n\n[truncated ${text.length - maxLength} characters]`;
+}
+
+function semaiBuildGitHubIssueTitle(subject, senderName) {
+  return [
+    "UI issue",
+    subject || "Conversation",
+    senderName || "Unknown sender"
+  ]
+    .map((part) => String(part || "").replace(/\s+/g, " ").trim())
+    .filter(Boolean)
+    .join(" | ")
+    .slice(0, 240);
+}
+
+function semaiBuildFallbackGitHubIssueBody(message, subject, reason) {
+  const senderName = message.sender?.name || "Unknown";
+  const senderEmail = message.sender?.email || "Unknown";
+  const timestamp = message.timestamp || "Unknown";
+
+  return [
+    "## Reported from REMOU",
+    "",
+    `- Subject: ${subject || "Conversation"}`,
+    `- Sender: ${senderName}`,
+    `- Sender Email: ${senderEmail}`,
+    `- Timestamp: ${timestamp}`,
+    `- Page URL: ${window.location.href}`,
+    "",
+    "## Reason It's An Issue",
+    "",
+    reason || "No reason provided.",
+    "",
+    "## Note",
+    "",
+    "The richer HTML payload was rejected by GitHub validation, so this fallback report omits the raw HTML attachments."
+  ].join("\n");
+}
+
 // Capture a sanitized snapshot of the reading pane for use as a test fixture.
 // Strips: script tags, inline styles, GUIDs in attribute values, message body text.
 // Keeps: element structure, class names, data-* attributes, ARIA roles.
@@ -1603,13 +1651,13 @@ function semaiBuildGitHubIssueBody(message, subject, reason) {
     "## Clean HTML",
     "",
     "```html",
-    message.cleanHtml || "",
+    semaiTrimForGitHubIssue(message.cleanHtml),
     "```",
     "",
     "## Original HTML",
     "",
     "```html",
-    message.rawHtml || "",
+    semaiTrimForGitHubIssue(message.rawHtml),
     "```",
   ];
 
@@ -1620,12 +1668,12 @@ function semaiBuildGitHubIssueBody(message, subject, reason) {
       "<!-- Sanitized snapshot for test fixtures. GUIDs, tokens, and email body text have been redacted. -->",
       "",
       "```html",
-      fixtureHtml,
+      semaiTrimForGitHubIssue(fixtureHtml),
       "```"
     );
   }
 
-  return parts.join("\n");
+  return semaiTrimForGitHubIssue(parts.join("\n"), SEMAI_GITHUB_ISSUE_BODY_LIMIT);
 }
 
 async function semaiCreateGitHubIssue(message, subject, reason) {
@@ -1637,27 +1685,53 @@ async function semaiCreateGitHubIssue(message, subject, reason) {
     throw new Error("Missing GitHub repo in secrets.js.");
   }
 
-  const titleParts = [
-    "UI issue",
-    subject || "Conversation",
-    message.sender?.name || "Unknown sender"
-  ];
-  const response = await fetch(`https://api.github.com/repos/${REMOU_GITHUB_REPO}/issues`, {
+  const title = semaiBuildGitHubIssueTitle(subject, message.sender?.name);
+  const issueUrl = `https://api.github.com/repos/${REMOU_GITHUB_REPO}/issues`;
+  const headers = {
+    "Accept": "application/vnd.github+json",
+    "Authorization": `Bearer ${REMOU_GITHUB_TOKEN}`,
+    "Content-Type": "application/json"
+  };
+  const primaryBody = semaiBuildGitHubIssueBody(message, subject, reason);
+  let response = await fetch(issueUrl, {
     method: "POST",
-    headers: {
-      "Accept": "application/vnd.github+json",
-      "Authorization": `Bearer ${REMOU_GITHUB_TOKEN}`,
-      "Content-Type": "application/json"
-    },
+    headers,
     body: JSON.stringify({
-      title: titleParts.join(" | ").slice(0, 240),
-      body: semaiBuildGitHubIssueBody(message, subject, reason)
+      title,
+      body: primaryBody
     })
   });
 
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
-    throw new Error(errorData.message || `GitHub API error ${response.status}`);
+    if (response.status === 422) {
+      response = await fetch(issueUrl, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          title,
+          body: semaiBuildFallbackGitHubIssueBody(message, subject, reason)
+        })
+      });
+
+      if (response.ok) {
+        return response.json();
+      }
+    }
+
+    const retryErrorData = response.ok ? {} : await response.json().catch(() => ({}));
+    const combinedErrorData = retryErrorData.message ? retryErrorData : errorData;
+    const errorDetails = Array.isArray(combinedErrorData.errors)
+      ? combinedErrorData.errors
+        .map((error) => {
+          if (typeof error === "string") return error;
+          const field = error.field ? `${error.field}: ` : "";
+          return `${field}${error.message || JSON.stringify(error)}`;
+        })
+        .join("; ")
+      : "";
+    const messageText = [combinedErrorData.message, errorDetails].filter(Boolean).join(" — ");
+    throw new Error(messageText || `GitHub API error ${response.status}`);
   }
 
   return response.json();
