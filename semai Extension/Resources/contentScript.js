@@ -1737,6 +1737,118 @@ async function semaiCreateGitHubIssue(message, subject, reason) {
   return response.json();
 }
 
+// ── Live fix preview ─────────────────────────────────────────────────────────
+
+async function semaiRequestPreviewFix(message, subject, reason) {
+  return new Promise((resolve, reject) => {
+    chrome.runtime.sendMessage({
+      type: 'PREVIEW_FIX',
+      payload: {
+        reason,
+        cleanHtml: message.cleanHtml,
+        rawHtml: message.rawHtml,
+        senderInfo: message.sender,
+        subject,
+        pageUrl: window.location.href,
+        anthropicApiKey: typeof REMOU_ANTHROPIC_API_KEY !== 'undefined' ? REMOU_ANTHROPIC_API_KEY : null
+      }
+    }, (response) => {
+      if (chrome.runtime.lastError) {
+        reject(new Error(chrome.runtime.lastError.message));
+        return;
+      }
+      if (!response?.ok) {
+        reject(new Error(response?.error || 'Preview fix failed'));
+        return;
+      }
+      resolve(response);
+    });
+  });
+}
+
+function semaiInjectPreviewPatch(patchType, patchCode) {
+  semaiRemovePreviewPatch();
+  if (patchType === 'js') {
+    const script = document.createElement('script');
+    script.textContent = patchCode;
+    script.dataset.semaiPreviewPatch = 'true';
+    (document.head || document.documentElement).appendChild(script);
+  } else if (patchType === 'css') {
+    const style = document.createElement('style');
+    style.textContent = patchCode;
+    style.dataset.semaiPreviewPatch = 'true';
+    (document.head || document.documentElement).appendChild(style);
+  }
+}
+
+function semaiRemovePreviewPatch() {
+  document.querySelectorAll('[data-semai-preview-patch]').forEach(el => el.remove());
+}
+
+function semaiBuildApprovedFixIssueBody(message, subject, reason, patch) {
+  const baseBody = semaiBuildGitHubIssueBody(message, subject, reason);
+  const approvedSection = [
+    "",
+    "## Approved Fix",
+    "",
+    `- Patch Type: ${patch.patchType}`,
+    `- URL Pattern: \`${patch.urlPattern}\``,
+    "",
+    "### Explanation",
+    patch.explanation,
+    "",
+    "### Patch Code",
+    "",
+    "```" + patch.patchType,
+    patch.patchCode,
+    "```",
+    "",
+    "<!-- SEMAI_APPROVED_PATCH",
+    JSON.stringify({
+      patchType: patch.patchType,
+      patchCode: patch.patchCode,
+      urlPattern: patch.urlPattern,
+      explanation: patch.explanation
+    }),
+    "SEMAI_APPROVED_PATCH -->"
+  ].join("\n");
+
+  return semaiTrimForGitHubIssue(
+    baseBody + approvedSection,
+    SEMAI_GITHUB_ISSUE_BODY_LIMIT
+  );
+}
+
+async function semaiCreateApprovedFixIssue(message, subject, reason, patch) {
+  if (!REMOU_GITHUB_TOKEN) throw new Error("Missing GitHub token in secrets.js.");
+  if (!REMOU_GITHUB_REPO) throw new Error("Missing GitHub repo in secrets.js.");
+
+  const title = semaiBuildGitHubIssueTitle(subject, message.sender?.name);
+  const response = await fetch(`https://api.github.com/repos/${REMOU_GITHUB_REPO}/issues`, {
+    method: "POST",
+    headers: {
+      "Accept": "application/vnd.github+json",
+      "Authorization": `Bearer ${REMOU_GITHUB_TOKEN}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      title,
+      body: semaiBuildApprovedFixIssueBody(message, subject, reason, patch),
+      labels: ["auto-fix"]
+    })
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    const errorDetails = Array.isArray(errorData.errors)
+      ? errorData.errors.map(e => typeof e === "string" ? e : `${e.field || ""}: ${e.message || JSON.stringify(e)}`).join("; ")
+      : "";
+    throw new Error([errorData.message, errorDetails].filter(Boolean).join(" — ") || `GitHub API error ${response.status}`);
+  }
+
+  return response.json();
+}
+
 function semaiClearReportHover() {
   if (semaiReportHoverRow) {
     semaiReportHoverRow.classList.remove("semai-chat-row-report-hover");
@@ -1792,15 +1904,40 @@ function semaiOpenReportPopover(overlay, message, subject, clientX, clientY) {
     ></textarea>
     <div class="semai-report-popover-actions">
       <button type="button" class="semai-report-popover-cancel">Cancel</button>
-      <button type="button" class="semai-report-popover-send">Send</button>
+      <button type="button" class="semai-report-popover-preview">Preview Fix</button>
+      <button type="button" class="semai-report-popover-send">Report Only</button>
+    </div>
+    <div class="semai-report-popover-preview-result" style="display:none;">
+      <div class="semai-report-popover-explanation"></div>
+      <div class="semai-report-popover-preview-actions">
+        <button type="button" class="semai-report-popover-reject">Reject</button>
+        <button type="button" class="semai-report-popover-approve">Approve &amp; Report</button>
+      </div>
     </div>
   `;
 
   const cancelBtn = popover.querySelector(".semai-report-popover-cancel");
+  const previewBtn = popover.querySelector(".semai-report-popover-preview");
   const sendBtn = popover.querySelector(".semai-report-popover-send");
+  const previewResult = popover.querySelector(".semai-report-popover-preview-result");
+  const explanationEl = popover.querySelector(".semai-report-popover-explanation");
+  const rejectBtn = popover.querySelector(".semai-report-popover-reject");
+  const approveBtn = popover.querySelector(".semai-report-popover-approve");
   const input = popover.querySelector(".semai-report-popover-input");
 
+  let currentPatch = null;
+
+  function setAllDisabled(disabled) {
+    cancelBtn.disabled = disabled;
+    previewBtn.disabled = disabled;
+    sendBtn.disabled = disabled;
+    input.disabled = disabled;
+    rejectBtn.disabled = disabled;
+    approveBtn.disabled = disabled;
+  }
+
   cancelBtn.addEventListener("click", () => {
+    semaiRemovePreviewPatch();
     semaiCloseReportPopover();
     semaiSetReportModeStatus(
       overlay,
@@ -1809,6 +1946,62 @@ function semaiOpenReportPopover(overlay, message, subject, clientX, clientY) {
     );
   });
 
+  // ── Preview Fix: call Claude via background.js ──
+  previewBtn.addEventListener("click", async () => {
+    const reason = input.value.trim();
+    if (!reason) {
+      input.focus();
+      semaiSetReportModeStatus(overlay, "Type the reason before previewing a fix.", "error");
+      return;
+    }
+
+    setAllDisabled(true);
+    previewResult.style.display = "none";
+    semaiRemovePreviewPatch();
+    semaiSetReportModeStatus(overlay, "Asking Claude for a fix…", "report");
+
+    try {
+      const patch = await semaiRequestPreviewFix(message, subject, reason);
+      currentPatch = patch;
+      semaiInjectPreviewPatch(patch.patchType, patch.patchCode);
+      explanationEl.textContent = patch.explanation;
+      previewResult.style.display = "block";
+      setAllDisabled(false);
+      semaiSetReportModeStatus(overlay, "Fix previewed — check the result, then approve or reject.", "success");
+    } catch (error) {
+      setAllDisabled(false);
+      semaiSetReportModeStatus(overlay, error.message || "Preview fix failed.", "error");
+    }
+  });
+
+  // ── Reject: remove the preview patch, let user try again ──
+  rejectBtn.addEventListener("click", () => {
+    semaiRemovePreviewPatch();
+    currentPatch = null;
+    previewResult.style.display = "none";
+    semaiSetReportModeStatus(overlay, "Fix rejected. Edit your description and try again, or report as-is.", "report");
+  });
+
+  // ── Approve & Report: create issue with the working patch embedded ──
+  approveBtn.addEventListener("click", async () => {
+    if (!currentPatch) return;
+    const reason = input.value.trim();
+
+    setAllDisabled(true);
+    semaiSetReportModeStatus(overlay, "Creating GitHub issue with approved fix…", "report");
+
+    try {
+      await semaiCreateApprovedFixIssue(message, subject, reason, currentPatch);
+      semaiRemovePreviewPatch();
+      semaiCloseReportPopover();
+      semaiExitReportMode(overlay, "Issue reported with approved fix.", "success");
+    } catch (error) {
+      setAllDisabled(false);
+      semaiSetReportModeStatus(overlay, error.message || "Failed to create GitHub issue.", "error");
+    }
+  });
+
+  // ── Report Only: existing behavior (no fix preview) ──
   sendBtn.addEventListener("click", async () => {
     const reason = input.value.trim();
     if (!reason) {
@@ -1817,23 +2010,16 @@ function semaiOpenReportPopover(overlay, message, subject, clientX, clientY) {
       return;
     }
 
-    cancelBtn.disabled = true;
-    sendBtn.disabled = true;
-    input.disabled = true;
+    setAllDisabled(true);
+    semaiRemovePreviewPatch();
     semaiSetReportModeStatus(overlay, "Creating GitHub issue…", "report");
 
     try {
-      const issue = await semaiCreateGitHubIssue(message, subject, reason);
+      await semaiCreateGitHubIssue(message, subject, reason);
       semaiCloseReportPopover();
-      semaiExitReportMode(
-        overlay,
-        "Issue has been reported successfully.",
-        "success"
-      );
+      semaiExitReportMode(overlay, "Issue has been reported successfully.", "success");
     } catch (error) {
-      cancelBtn.disabled = false;
-      sendBtn.disabled = false;
-      input.disabled = false;
+      setAllDisabled(false);
       semaiSetReportModeStatus(overlay, error.message || "Failed to create GitHub issue.", "error");
     }
   });
@@ -1852,7 +2038,7 @@ function semaiOpenReportPopover(overlay, message, subject, clientX, clientY) {
   popover.style.left = `${Math.max(margin, left)}px`;
   popover.style.top = `${Math.max(margin, top)}px`;
 
-  semaiSetReportModeStatus(overlay, "Describe the issue, then send the ticket.", "report");
+  semaiSetReportModeStatus(overlay, "Describe the issue, then preview a fix or report as-is.", "report");
   input.focus();
 }
 

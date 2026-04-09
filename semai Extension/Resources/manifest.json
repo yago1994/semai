@@ -44,6 +44,7 @@
     "https://outlook.cloud.microsoft/*",
     "https://api.openai.com/*",
     "https://api.github.com/*",
-    "https://yago1994.github.io/*"
+    "https://yago1994.github.io/*",
+    "https://api.anthropic.com/*"
   ]
 }

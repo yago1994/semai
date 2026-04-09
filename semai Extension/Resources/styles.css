@@ -600,8 +600,71 @@ body.semai-calibrating * {
   box-shadow: 0 8px 18px rgba(220, 38, 38, 0.22);
 }
 
+.semai-report-popover-preview {
+  border: none;
+  background: #2563eb;
+  color: #ffffff;
+  border-radius: 999px;
+  padding: 8px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 8px 18px rgba(37, 99, 235, 0.22);
+}
+
 .semai-report-popover-cancel:disabled,
-.semai-report-popover-send:disabled {
+.semai-report-popover-send:disabled,
+.semai-report-popover-preview:disabled {
+  opacity: 0.6;
+  cursor: default;
+  box-shadow: none;
+}
+
+.semai-report-popover-preview-result {
+  margin-top: 10px;
+  padding: 10px;
+  background: rgba(37, 99, 235, 0.06);
+  border-radius: 8px;
+  border: 1px solid rgba(37, 99, 235, 0.15);
+}
+
+.semai-report-popover-explanation {
+  font-size: 12px;
+  line-height: 1.5;
+  color: #334155;
+  margin-bottom: 10px;
+}
+
+.semai-report-popover-preview-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.semai-report-popover-reject,
+.semai-report-popover-approve {
+  border-radius: 999px;
+  padding: 8px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.semai-report-popover-reject {
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  background: #ffffff;
+  color: #334155;
+}
+
+.semai-report-popover-approve {
+  border: none;
+  background: #16a34a;
+  color: #ffffff;
+  box-shadow: 0 8px 18px rgba(22, 163, 74, 0.22);
+}
+
+.semai-report-popover-reject:disabled,
+.semai-report-popover-approve:disabled {
   opacity: 0.6;
   cursor: default;
   box-shadow: none;
