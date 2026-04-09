@@ -845,6 +845,13 @@ function semaiFoldNameForMatch(text) {
     .replace(/[\u0300-\u036f]/g, "");
 }
 
+function semaiNameMatchRemainder(text, nameToken) {
+  const foldedText = semaiFoldNameForMatch(text);
+  const foldedToken = semaiFoldNameForMatch(nameToken);
+  if (!foldedText.startsWith(foldedToken)) return null;
+  return foldedText.slice(foldedToken.length);
+}
+
 function semaiGetNameTokens(text) {
   return semaiNormalizeNameLine(text)
     .split(/\s+/)
@@ -1052,10 +1059,10 @@ function semaiFindStandaloneContactCard(container, senderFirstNameOrTokens) {
     const firstLine = lines[0];
 
     // First line must start with ANY sender name token (case insensitive)
-    const foldedFirstLine = semaiFoldNameForMatch(firstLine);
-    const matchedToken = nameTokens.find((token) => foldedFirstLine.startsWith(semaiFoldNameForMatch(token)));
+    const matchedToken = nameTokens.find((token) => semaiNameMatchRemainder(firstLine, token) !== null);
     if (!matchedToken) continue;
-    const charAfter = firstLine[matchedToken.length];
+    const remainder = semaiNameMatchRemainder(firstLine, matchedToken);
+    const charAfter = remainder?.[0];
     if (charAfter && !/[\s,.]/.test(charAfter)) continue;
 
     // Must have credentials OR a professional title on the first line or nearby lines
@@ -1335,8 +1342,9 @@ function semaiFindSenderAnchor(body, senderName) {
     // 120 chars (academic/medical dept names can exceed 80) but cap at 2 long
     // lines — a real paragraph would have far more text.
     if (!senderName) continue;
-    if (semaiFoldNameForMatch(firstLine).startsWith(semaiFoldNameForMatch(senderName))) {
-      const charAfter = firstLine[senderName.length];
+    const firstLineNameRemainder = semaiNameMatchRemainder(firstLine, senderName);
+    if (firstLineNameRemainder !== null) {
+      const charAfter = firstLineNameRemainder[0];
       if (!charAfter || /[\s,.]/.test(charAfter)) {
         const longLines = lines.filter(l => l.length > 120).length;
         semaiNativeLog(`[semai-sig] PatternC candidate: firstLine="${firstLine}" senderName="${senderName}" lines=${lines.length} longLines=${longLines}`);
@@ -1700,6 +1708,7 @@ async function semaiCreateGitHubIssue(message, subject, reason) {
     "Content-Type": "application/json"
   };
   const primaryBody = semaiBuildGitHubIssueBody(message, subject, reason);
+  semaiNativeLog(`[semai-report] Creating GitHub issue for repo="${REMOU_GITHUB_REPO}" title="${title}" primaryBodyLength=${primaryBody.length}`);
   let response = await fetch(issueUrl, {
     method: "POST",
     headers,
@@ -1711,25 +1720,42 @@ async function semaiCreateGitHubIssue(message, subject, reason) {
 
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
+    semaiNativeLog(`[semai-report] Primary issue create failed status=${response.status} message="${errorData.message || "unknown"}" errors=${JSON.stringify(errorData.errors || [])}`);
     if (response.status === 422) {
+      const fallbackBody = semaiBuildFallbackGitHubIssueBody(message, subject, reason);
+      semaiNativeLog(`[semai-report] Retrying GitHub issue with fallback body length=${fallbackBody.length}`);
       response = await fetch(issueUrl, {
         method: "POST",
         headers,
         body: JSON.stringify({
           title,
-          body: semaiBuildFallbackGitHubIssueBody(message, subject, reason)
+          body: fallbackBody
         })
       });
 
       if (response.ok) {
-        return response.json();
+        const fallbackIssue = await response.json();
+        semaiNativeLog(`[semai-report] Fallback issue create succeeded issueNumber=${fallbackIssue.number || "unknown"} url="${fallbackIssue.html_url || ""}"`);
+        return fallbackIssue;
       }
+
+      const fallbackErrorData = await response.json().catch(() => ({}));
+      semaiNativeLog(`[semai-report] Fallback issue create failed status=${response.status} message="${fallbackErrorData.message || "unknown"}" errors=${JSON.stringify(fallbackErrorData.errors || [])}`);
+      const errorDetails = Array.isArray(fallbackErrorData.errors)
+        ? fallbackErrorData.errors
+          .map((error) => {
+            if (typeof error === "string") return error;
+            const field = error.field ? `${error.field}: ` : "";
+            return `${field}${error.message || JSON.stringify(error)}`;
+          })
+          .join("; ")
+        : "";
+      const messageText = [fallbackErrorData.message, errorDetails].filter(Boolean).join(" — ");
+      throw new Error(messageText || `GitHub API error ${response.status}`);
     }
 
-    const retryErrorData = response.ok ? {} : await response.json().catch(() => ({}));
-    const combinedErrorData = retryErrorData.message ? retryErrorData : errorData;
-    const errorDetails = Array.isArray(combinedErrorData.errors)
-      ? combinedErrorData.errors
+    const errorDetails = Array.isArray(errorData.errors)
+      ? errorData.errors
         .map((error) => {
           if (typeof error === "string") return error;
           const field = error.field ? `${error.field}: ` : "";
@@ -1737,11 +1763,13 @@ async function semaiCreateGitHubIssue(message, subject, reason) {
         })
         .join("; ")
       : "";
-    const messageText = [combinedErrorData.message, errorDetails].filter(Boolean).join(" — ");
+    const messageText = [errorData.message, errorDetails].filter(Boolean).join(" — ");
     throw new Error(messageText || `GitHub API error ${response.status}`);
   }
 
-  return response.json();
+  const createdIssue = await response.json();
+  semaiNativeLog(`[semai-report] Issue create succeeded issueNumber=${createdIssue.number || "unknown"} url="${createdIssue.html_url || ""}"`);
+  return createdIssue;
 }
 
 // ── Live fix preview ─────────────────────────────────────────────────────────
@@ -1754,31 +1782,41 @@ async function semaiRequestPreviewFix(message, subject, reason) {
   const apiKey = typeof REMOU_ANTHROPIC_API_KEY !== "undefined" ? REMOU_ANTHROPIC_API_KEY : null;
   if (!apiKey) throw new Error("Anthropic API key not configured in secrets.js");
 
-  // Use chrome.runtime.sendMessage with callback — same proven pattern as
-  // content.js GET_PATCHES. browser.runtime.sendMessage was silently failing.
+  console.log("[semai-preview] Starting preview fix request...");
+  console.log("[semai-preview] API key present:", !!apiKey);
+  console.log("[semai-preview] chrome.runtime available:", typeof chrome !== "undefined" && !!chrome.runtime);
+
   return new Promise((resolve, reject) => {
-    chrome.runtime.sendMessage({
-      type: "PREVIEW_FIX",
-      payload: {
-        reason,
-        cleanHtml: (message.cleanHtml || "").slice(0, 8000),
-        rawHtml: (message.rawHtml || "").slice(0, 8000),
-        senderInfo: message.sender,
-        subject,
-        pageUrl: window.location.href,
-        anthropicApiKey: apiKey,
-      }
-    }, (response) => {
-      if (chrome.runtime.lastError) {
-        reject(new Error(chrome.runtime.lastError.message));
-        return;
-      }
-      if (!response?.ok) {
-        reject(new Error(response?.error || "Preview fix failed"));
-        return;
-      }
-      resolve(response);
-    });
+    try {
+      chrome.runtime.sendMessage({
+        type: "PREVIEW_FIX",
+        payload: {
+          reason,
+          cleanHtml: (message.cleanHtml || "").slice(0, 8000),
+          rawHtml: (message.rawHtml || "").slice(0, 8000),
+          senderInfo: message.sender,
+          subject,
+          pageUrl: window.location.href,
+          anthropicApiKey: apiKey,
+        }
+      }, (response) => {
+        if (chrome.runtime.lastError) {
+          console.error("[semai-preview] chrome.runtime.lastError:", chrome.runtime.lastError.message);
+          reject(new Error(chrome.runtime.lastError.message));
+          return;
+        }
+        console.log("[semai-preview] Got response:", JSON.stringify(response).slice(0, 200));
+        if (!response?.ok) {
+          reject(new Error(response?.error || "Preview fix failed"));
+          return;
+        }
+        resolve(response);
+      });
+      console.log("[semai-preview] sendMessage called successfully");
+    } catch (err) {
+      console.error("[semai-preview] sendMessage threw synchronously:", err.message);
+      reject(new Error("sendMessage failed: " + err.message));
+    }
   });
 }
 
@@ -1920,8 +1958,8 @@ function semaiOpenReportPopover(overlay, message, subject, clientX, clientY) {
     ></textarea>
     <div class="semai-report-popover-actions">
       <button type="button" class="semai-report-popover-cancel">Cancel</button>
-      <button type="button" class="semai-report-popover-preview">Preview Fix</button>
-      <button type="button" class="semai-report-popover-send">Report Only</button>
+      <button type="button" class="semai-report-popover-preview">Preview</button>
+      <button type="button" class="semai-report-popover-send">Report</button>
     </div>
     <div class="semai-report-popover-preview-result" style="display:none;">
       <div class="semai-report-popover-explanation"></div>
@@ -1986,6 +2024,7 @@ function semaiOpenReportPopover(overlay, message, subject, clientX, clientY) {
       semaiSetReportModeStatus(overlay, "Fix previewed — check the result, then approve or reject.", "success");
     } catch (error) {
       setAllDisabled(false);
+      semaiNativeLog(`[semai-preview] Preview fix failed: ${error.message}`);
       semaiSetReportModeStatus(overlay, error.message || "Preview fix failed.", "error");
     }
   });
@@ -3188,7 +3227,7 @@ function semaiCreateChatOverlay(messages, subject) {
           class="semai-chat-report-issue-btn"
           type="button"
         >
-          Report
+          Report issue
         </button>
         <button
           id="semai-chat-view-toggle-btn"
@@ -3205,7 +3244,7 @@ function semaiCreateChatOverlay(messages, subject) {
           </span>
         </button>
         <button id="semai-chat-reply-send-btn" class="semai-chat-reply-btn" type="button">
-          Preview
+          Reply all
         </button>
       </div>
     </div>
