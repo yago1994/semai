@@ -1754,36 +1754,32 @@ async function semaiRequestPreviewFix(message, subject, reason) {
   const apiKey = typeof REMOU_ANTHROPIC_API_KEY !== "undefined" ? REMOU_ANTHROPIC_API_KEY : null;
   if (!apiKey) throw new Error("Anthropic API key not configured in secrets.js");
 
-  const payload = {
-    reason,
-    cleanHtml: (message.cleanHtml || "").slice(0, 8000),
-    rawHtml: (message.rawHtml || "").slice(0, 8000),
-    senderInfo: message.sender,
-    subject,
-    pageUrl: window.location.href,
-    anthropicApiKey: apiKey,
-  };
-
-  const payloadSize = JSON.stringify(payload).length;
-  semaiNativeLog("[semai-preview] Sending PREVIEW_FIX to background.js (payload: " + payloadSize + " chars)...");
-
-  let response;
-  try {
-    response = await browser.runtime.sendMessage({
+  // Use chrome.runtime.sendMessage with callback — same proven pattern as
+  // content.js GET_PATCHES. browser.runtime.sendMessage was silently failing.
+  return new Promise((resolve, reject) => {
+    chrome.runtime.sendMessage({
       type: "PREVIEW_FIX",
-      payload,
+      payload: {
+        reason,
+        cleanHtml: (message.cleanHtml || "").slice(0, 8000),
+        rawHtml: (message.rawHtml || "").slice(0, 8000),
+        senderInfo: message.sender,
+        subject,
+        pageUrl: window.location.href,
+        anthropicApiKey: apiKey,
+      }
+    }, (response) => {
+      if (chrome.runtime.lastError) {
+        reject(new Error(chrome.runtime.lastError.message));
+        return;
+      }
+      if (!response?.ok) {
+        reject(new Error(response?.error || "Preview fix failed"));
+        return;
+      }
+      resolve(response);
     });
-  } catch (err) {
-    semaiNativeLog("[semai-preview] sendMessage threw: " + err.name + ": " + err.message);
-    throw new Error("Extension messaging failed: " + err.message);
-  }
-
-  semaiNativeLog("[semai-preview] Got response from background.js: " + JSON.stringify(response).slice(0, 200));
-
-  if (!response?.ok) {
-    throw new Error(response?.error || "Preview fix failed");
-  }
-  return response;
+  });
 }
 
 function semaiInjectPreviewPatch(patchType, patchCode) {
@@ -3192,7 +3188,7 @@ function semaiCreateChatOverlay(messages, subject) {
           class="semai-chat-report-issue-btn"
           type="button"
         >
-          Report issue
+          Report
         </button>
         <button
           id="semai-chat-view-toggle-btn"
@@ -3209,7 +3205,7 @@ function semaiCreateChatOverlay(messages, subject) {
           </span>
         </button>
         <button id="semai-chat-reply-send-btn" class="semai-chat-reply-btn" type="button">
-          Reply all
+          Preview
         </button>
       </div>
     </div>

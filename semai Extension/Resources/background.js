@@ -1,8 +1,7 @@
-// background.js — patch loader + Xcode log relay service worker
+// background.js — patch loader + Xcode log relay + live fix preview
 
 // ── Patch loader ──────────────────────────────────────────────────────────────
 // Fetches patches.json hourly, validates schema, caches in storage.
-// Answers content-script queries with URL-filtered patches.
 
 const PATCH_MANIFEST_URL =
   'https://yago1994.github.io/semai/patches/patches.json';
@@ -72,29 +71,7 @@ function semverSatisfies(required) {
   return cPat >= rPat;
 }
 
-chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  if (msg.type !== 'GET_PATCHES') return false;
-
-  chrome.storage.local.get(STORAGE_KEY, (result) => {
-    const all = result[STORAGE_KEY] ?? [];
-    const pageUrl = sender.url ?? '';
-    const applicable = all.filter((p) => {
-      try {
-        return new RegExp(p.urlPattern).test(pageUrl);
-      } catch {
-        return false;
-      }
-    });
-    sendResponse({ patches: applicable });
-  });
-
-  return true; // keep message channel open for async response
-});
-
-// ── Live fix preview via Claude API ──────────────────────────────────────────
-// Uses browser.runtime (not chrome.runtime) to match Safari's WebExtension API.
-// The fetch runs in the extension's origin, which bypasses CORS restrictions
-// that block content script fetches to api.anthropic.com.
+// ── Live fix preview — Claude API tool definition ────────────────────────────
 
 const APPLY_FIX_TOOL = {
   name: 'apply_fix',
@@ -154,39 +131,49 @@ const PREVIEW_FIX_SYSTEM_PROMPT = [
   '- Keep patches minimal — fix only the reported issue.',
 ].join('\n');
 
-function nativeLog(text) {
-  try {
-    browser.runtime.sendNativeMessage("yam.team.remou", { log: text });
-  } catch { /* ignore */ }
-}
+// ── Single chrome.runtime message handler ────────────────────────────────────
+// Uses chrome.runtime (same API as the working GET_PATCHES handler).
+// All message types handled in one listener to avoid channel conflicts.
 
-// ── Unified browser.runtime message handler ──────────────────────────────────
-// Single listener for all browser.runtime messages. Having multiple listeners
-// in Safari can cause the message channel to close prematurely when one listener
-// returns undefined while another needs async response.
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (!msg || !msg.type) return false;
 
-browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (!message || !message.type) return false;
+  // ── GET_PATCHES ──
+  if (msg.type === 'GET_PATCHES') {
+    chrome.storage.local.get(STORAGE_KEY, (result) => {
+      const all = result[STORAGE_KEY] ?? [];
+      const pageUrl = sender.url ?? '';
+      const applicable = all.filter((p) => {
+        try {
+          return new RegExp(p.urlPattern).test(pageUrl);
+        } catch {
+          return false;
+        }
+      });
+      sendResponse({ patches: applicable });
+    });
+    return true;
+  }
 
   // ── Xcode log relay ──
-  if (message.type === "semaiLog") {
+  if (msg.type === 'semaiLog') {
     try {
-      browser.runtime.sendNativeMessage("yam.team.remou", { log: message.text });
+      browser.runtime.sendNativeMessage('yam.team.remou', { log: msg.text });
     } catch { /* ignore */ }
     return false;
   }
 
   // ── Live fix preview ──
-  if (message.type === "PREVIEW_FIX") {
+  if (msg.type === 'PREVIEW_FIX') {
     const { reason, cleanHtml, rawHtml, senderInfo, subject, pageUrl, anthropicApiKey } =
-      message.payload || {};
+      msg.payload || {};
+
+    console.log('[semai-preview] Received PREVIEW_FIX message');
 
     if (!anthropicApiKey) {
       sendResponse({ ok: false, error: 'Anthropic API key not configured in secrets.js' });
       return false;
     }
-
-    nativeLog('[semai-preview] background.js received PREVIEW_FIX');
 
     const userMessage = [
       '## Bug report',
@@ -217,7 +204,7 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
       messages: [{ role: 'user', content: userMessage }],
     });
 
-    nativeLog('[semai-preview] Calling Anthropic API (' + body.length + ' chars)...');
+    console.log('[semai-preview] Calling Anthropic API (' + body.length + ' chars)...');
 
     fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -229,12 +216,12 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
       body,
     })
       .then((res) => {
-        nativeLog('[semai-preview] Response status: ' + res.status);
+        console.log('[semai-preview] Response status: ' + res.status);
         if (!res.ok) {
           return res.text().then((t) => {
-            nativeLog('[semai-preview] Error body: ' + t.slice(0, 500));
+            console.error('[semai-preview] Error body: ' + t.slice(0, 500));
             const parsed = (() => { try { return JSON.parse(t); } catch { return {}; } })();
-            return Promise.reject(new Error(parsed.error?.message || 'HTTP ' + res.status + ': ' + t.slice(0, 200)));
+            return Promise.reject(new Error(parsed.error?.message || 'HTTP ' + res.status));
           });
         }
         return res.json();
@@ -244,11 +231,11 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
           (b) => b.type === 'tool_use' && b.name === 'apply_fix'
         );
         if (!toolUse) {
-          nativeLog('[semai-preview] No tool_use block. Blocks: ' + JSON.stringify((data.content || []).map(b => b.type)));
+          console.warn('[semai-preview] No tool_use block in response');
           sendResponse({ ok: false, error: 'Claude did not return a fix suggestion.' });
           return;
         }
-        nativeLog('[semai-preview] Got patch: type=' + toolUse.input.patchType + ' code=' + (toolUse.input.patchCode || '').length + ' chars');
+        console.log('[semai-preview] Got patch: ' + toolUse.input.patchType);
         sendResponse({
           ok: true,
           explanation: toolUse.input.explanation,
@@ -258,11 +245,11 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
         });
       })
       .catch((err) => {
-        nativeLog('[semai-preview] Fetch error: ' + err.message);
+        console.error('[semai-preview] Fetch error: ' + err.message);
         sendResponse({ ok: false, error: err.message || 'Preview fix request failed.' });
       });
 
-    return true; // keep message channel open for async response
+    return true; // keep channel open for async response
   }
 
   return false;
