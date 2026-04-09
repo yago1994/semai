@@ -1,0 +1,12 @@
+{
+  "name": "semai",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "test": "node scripts/run-tests.js"
+  },
+  "dependencies": {
+    "jsdom": "^25.0.0"
+  }
+}
