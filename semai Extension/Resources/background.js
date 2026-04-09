@@ -163,6 +163,46 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return false;
   }
 
+  // ── Patch injection (bypasses page CSP via chrome.scripting) ──
+  if (msg.type === 'INJECT_PATCH') {
+    const { patchType, patchCode } = msg.payload || {};
+    const tabId = sender.tab?.id;
+    if (!tabId) {
+      sendResponse({ ok: false, error: 'No tab ID available' });
+      return false;
+    }
+    const target = { tabId };
+    if (patchType === 'css') {
+      chrome.scripting.insertCSS({ target, css: patchCode })
+        .then(() => sendResponse({ ok: true }))
+        .catch((err) => sendResponse({ ok: false, error: err.message }));
+      return true;
+    }
+    if (patchType === 'js') {
+      chrome.scripting.executeScript({
+        target,
+        world: 'MAIN',
+        func: (code) => { (0, eval)(code); },
+        args: [patchCode],
+      })
+        .then(() => sendResponse({ ok: true }))
+        .catch((err) => sendResponse({ ok: false, error: err.message }));
+      return true;
+    }
+    sendResponse({ ok: false, error: 'Unknown patchType: ' + patchType });
+    return false;
+  }
+
+  // ── Remove CSS patch (undo preview) ──
+  if (msg.type === 'REMOVE_CSS_PATCH') {
+    const { css } = msg.payload || {};
+    const tabId = sender.tab?.id;
+    if (tabId && css) {
+      chrome.scripting.removeCSS({ target: { tabId }, css }).catch(() => {});
+    }
+    return false;
+  }
+
   // ── Live fix preview ──
   if (msg.type === 'PREVIEW_FIX') {
     const { reason, cleanHtml, rawHtml, senderInfo, subject, pageUrl, anthropicApiKey } =

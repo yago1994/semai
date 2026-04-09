@@ -12,7 +12,8 @@
   },
   "permissions": [
     "storage",
-    "alarms"
+    "alarms",
+    "scripting"
   ],
   "content_scripts": [
     {

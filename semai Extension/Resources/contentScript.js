@@ -1820,23 +1820,35 @@ async function semaiRequestPreviewFix(message, subject, reason) {
   });
 }
 
+// Tracks the last injected CSS so it can be removed on reject.
+// JS patches can't be undone without a page reload.
+let _semaiPreviewCssCode = null;
+
 function semaiInjectPreviewPatch(patchType, patchCode) {
   semaiRemovePreviewPatch();
-  if (patchType === 'js') {
-    const script = document.createElement('script');
-    script.textContent = patchCode;
-    script.dataset.semaiPreviewPatch = 'true';
-    (document.head || document.documentElement).appendChild(script);
-  } else if (patchType === 'css') {
-    const style = document.createElement('style');
-    style.textContent = patchCode;
-    style.dataset.semaiPreviewPatch = 'true';
-    (document.head || document.documentElement).appendChild(style);
-  }
+  if (patchType === 'css') _semaiPreviewCssCode = patchCode;
+  chrome.runtime.sendMessage(
+    { type: 'INJECT_PATCH', payload: { patchType, patchCode } },
+    (response) => {
+      if (chrome.runtime.lastError) {
+        semaiNativeLog(`[semai-preview] Inject failed: ${chrome.runtime.lastError.message}`);
+      } else if (!response?.ok) {
+        semaiNativeLog(`[semai-preview] Inject error: ${response?.error}`);
+      } else {
+        semaiNativeLog(`[semai-preview] Patch injected (${patchType})`);
+      }
+    }
+  );
 }
 
 function semaiRemovePreviewPatch() {
-  document.querySelectorAll('[data-semai-preview-patch]').forEach(el => el.remove());
+  // Remove CSS injected via chrome.scripting
+  if (_semaiPreviewCssCode) {
+    const css = _semaiPreviewCssCode;
+    _semaiPreviewCssCode = null;
+    chrome.runtime.sendMessage({ type: 'REMOVE_CSS_PATCH', payload: { css } });
+  }
+  // JS patches can't be removed without a page reload — acceptable for preview
 }
 
 function semaiBuildApprovedFixIssueBody(message, subject, reason, patch) {
