@@ -67,6 +67,14 @@ function runAssertion(dom, assertion) {
         : { pass: false, reason: `selector "${selector}" matched ${got}, expected ${want}` };
     }
 
+    case 'attributeExists': {
+      const el = doc.querySelector(selector);
+      if (!el) return { pass: false, reason: `selector "${selector}" matched nothing` };
+      return el.hasAttribute(assertion.attribute)
+        ? { pass: true }
+        : { pass: false, reason: `attribute "${assertion.attribute}" not found on "${selector}"` };
+    }
+
     case 'attributeEquals': {
       const el = doc.querySelector(selector);
       if (!el) return { pass: false, reason: `selector "${selector}" matched nothing` };
@@ -109,7 +117,13 @@ function buildDom(tc) {
     if (patch.type === 'js') {
       // eval executes the patch synchronously in the jsdom window context.
       // Injecting a <script> tag does nothing with runScripts:'outside-only'.
-      dom.window.eval(patch.code);
+      // After eval, stamp a marker attribute on <html> so tests can assert the
+      // patch ran (replaces the old script-tag presence check).
+      const alreadyRan = doc.documentElement.hasAttribute(`data-semai-patch-${patch.id}`);
+      if (!alreadyRan) {
+        dom.window.eval(patch.code);
+        doc.documentElement.setAttribute(`data-semai-patch-${patch.id}`, '1');
+      }
     } else if (patch.type === 'css') {
       const style = doc.createElement('style');
       style.textContent = patch.code;
