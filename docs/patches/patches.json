@@ -13,6 +13,19 @@
       "checksum": "",
       "rollback": null,
       "createdAt": "2026-04-06T00:00:00Z"
+    },
+    {
+      "id": "fix-sender-avatar-initials-v1",
+      "description": "Fixes sender bubble grabbing middle name initial instead of first name initial for 'Last, First M.' display name format.",
+      "urlPattern": "^https://outlook\\.(office(365)?\\.com|cloud\\.microsoft)/",
+      "minExtensionVersion": "0.1",
+      "severity": "medium",
+      "type": "js",
+      "target": "content",
+      "code": "(function () {\n  var PATCH_ID = 'fix-sender-avatar-initials-v1';\n  if (window['__semai_patch_' + PATCH_ID]) return;\n  window['__semai_patch_' + PATCH_ID] = true;\n\n  function getCorrectInitials(displayName) {\n    if (!displayName) return '';\n    var name = displayName.replace(/^From:\\s*/i, '').trim();\n    var commaIdx = name.indexOf(',');\n    if (commaIdx !== -1) {\n      var lastName = name.substring(0, commaIdx).trim();\n      var rest = name.substring(commaIdx + 1).trim();\n      var firstNamePart = rest.split(/\\s+/)[0];\n      var firstInitial = firstNamePart ? firstNamePart.charAt(0).toUpperCase() : '';\n      var lastInitial = lastName ? lastName.charAt(0).toUpperCase() : '';\n      if (firstInitial && lastInitial) return firstInitial + lastInitial;\n      return firstInitial || lastInitial;\n    }\n    var parts = name.split(/\\s+/).filter(function(p){ return p.length > 0; });\n    if (parts.length >= 2) return parts[0].charAt(0).toUpperCase() + parts[parts.length - 1].charAt(0).toUpperCase();\n    if (parts.length === 1) return parts[0].charAt(0).toUpperCase();\n    return '';\n  }\n\n  function fixAvatar(avatarEl) {\n    var label = avatarEl.getAttribute('aria-label') || '';\n    var correct = getCorrectInitials(label);\n    if (!correct) return;\n    var initialsEl = avatarEl.querySelector('.fui-Avatar__initials');\n    if (!initialsEl) return;\n    var current = initialsEl.textContent.trim();\n    if (current !== correct) {\n      initialsEl.textContent = correct;\n    }\n  }\n\n  function fixAll() {\n    var avatars = document.querySelectorAll('.semai-chat-avatar, .fui-Avatar');\n    for (var i = 0; i < avatars.length; i++) {\n      fixAvatar(avatars[i]);\n    }\n  }\n\n  fixAll();\n\n  var observer = new MutationObserver(function(mutations) {\n    for (var i = 0; i < mutations.length; i++) {\n      var added = mutations[i].addedNodes;\n      for (var j = 0; j < added.length; j++) {\n        var node = added[j];\n        if (!(node instanceof Element)) continue;\n        if (node.matches('.semai-chat-avatar, .fui-Avatar')) {\n          fixAvatar(node);\n        }\n        var nested = node.querySelectorAll('.semai-chat-avatar, .fui-Avatar');\n        for (var k = 0; k < nested.length; k++) {\n          fixAvatar(nested[k]);\n        }\n      }\n    }\n  });\n  observer.observe(document.body || document.documentElement, { childList: true, subtree: true });\n}());",
+      "checksum": "",
+      "rollback": null,
+      "createdAt": "2026-07-14T00:00:00Z"
     }
   ]
 }

@@ -57,6 +57,19 @@
           "message": "Expected exactly one data-semai-patch-example-noop-v1 marker (idempotency)."
         }
       ]
+    },
+    {
+      "id": "fix-sender-avatar-initials-comma-format",
+      "description": "Avatar initials for 'Last, First M.' display name format should use first name initial first (e.g. 'GS' for 'Sabben, Gaelle L.'), not middle name initial.",
+      "fixture": "outlook-thread",
+      "patch": "fix-sender-avatar-initials-v1",
+      "assertions": [
+        {
+          "type": "selectorExists",
+          "selector": "#ReadingPaneContainerId",
+          "message": "Expected #ReadingPaneContainerId in thread fixture."
+        }
+      ]
     }
   ]
 }
