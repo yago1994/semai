@@ -107,10 +107,9 @@ function buildDom(tc) {
 
     const doc = dom.window.document;
     if (patch.type === 'js') {
-      const script = doc.createElement('script');
-      script.textContent = patch.code;
-      script.setAttribute('data-semai-patch', patch.id);
-      (doc.head || doc.documentElement).appendChild(script);
+      // eval executes the patch synchronously in the jsdom window context.
+      // Injecting a <script> tag does nothing with runScripts:'outside-only'.
+      dom.window.eval(patch.code);
     } else if (patch.type === 'css') {
       const style = doc.createElement('style');
       style.textContent = patch.code;

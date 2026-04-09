@@ -95,6 +95,12 @@ ${sourceContext}
 2. Propose a minimal fix. The fix may be a source file change and/or a new patches.json entry.
 3. Propose a new test case for tests/test-cases.json that captures this specific bug.
 
+## Constraints for JS patches
+- The test harness runs patch code via eval() against a pre-built jsdom DOM — there is no browser event loop.
+- MutationObserver callbacks will NOT fire for elements that already exist in the DOM when the patch runs.
+- JS patches MUST process all matching elements synchronously (e.g. querySelectorAll loop) immediately when executed, in addition to any MutationObserver for live pages.
+- Do not rely solely on MutationObserver — always also do an initial synchronous pass over existing elements.
+
 Respond with ONLY valid JSON — no markdown fences, no text outside the JSON object:
 {
   "explanation": "<one paragraph describing the fix>",
