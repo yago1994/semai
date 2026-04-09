@@ -839,6 +839,12 @@ function semaiNormalizeNameLine(text) {
     .toLowerCase();
 }
 
+function semaiFoldNameForMatch(text) {
+  return semaiNormalizeNameLine(text)
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+}
+
 function semaiGetNameTokens(text) {
   return semaiNormalizeNameLine(text)
     .split(/\s+/)
@@ -855,7 +861,7 @@ function semaiLooksLikeNameLine(text, senderFirstName) {
   const nameish = tokens.every((token) => /^[A-Z][A-Za-z.'-]*$/.test(token) || /^[A-Z]\.$/.test(token));
   if (nameish) return true;
 
-  return !!senderFirstName && raw.toLowerCase() === senderFirstName;
+  return !!senderFirstName && semaiFoldNameForMatch(raw) === semaiFoldNameForMatch(senderFirstName);
 }
 
 function semaiCountContactSignals(text, containerEl) {
@@ -926,8 +932,8 @@ function semaiIsEntireBodySignature(clone, senderFirstName) {
   // text precedes the person's name (e.g. "Acme Corp\nLeah Ekube\nRenewal…").
   const lines = text.split(/(?<=[.!?])\s+|\n+/).map(l => l.trim()).filter(Boolean);
   if (lines.length === 0) return false;
-  const firstThreeText = lines.slice(0, 3).join(" ").toLowerCase();
-  if (!firstThreeText.includes(senderFirstName.toLowerCase())) return false;
+  const firstThreeText = semaiFoldNameForMatch(lines.slice(0, 3).join(" "));
+  if (!firstThreeText.includes(semaiFoldNameForMatch(senderFirstName))) return false;
 
   // Must have at least one URL/image signal in the raw HTML
   const hasUrl = SEMAI_URL_RE.test(text) || !!clone.querySelector("img, a[href]");
@@ -1046,8 +1052,8 @@ function semaiFindStandaloneContactCard(container, senderFirstNameOrTokens) {
     const firstLine = lines[0];
 
     // First line must start with ANY sender name token (case insensitive)
-    const firstLineLower = firstLine.toLowerCase();
-    const matchedToken = nameTokens.find(token => firstLineLower.startsWith(token.toLowerCase()));
+    const foldedFirstLine = semaiFoldNameForMatch(firstLine);
+    const matchedToken = nameTokens.find((token) => foldedFirstLine.startsWith(semaiFoldNameForMatch(token)));
     if (!matchedToken) continue;
     const charAfter = firstLine[matchedToken.length];
     if (charAfter && !/[\s,.]/.test(charAfter)) continue;
@@ -1169,13 +1175,14 @@ function semaiFirstNameFromDisplayName(displayName) {
   if (/,/.test(name)) {
     // "Last, First [Middle]" → take the token right after the comma
     const afterComma = (name.split(/\s*,\s*/)[1] || "").split(/\s+/)[0];
-    if (afterComma && afterComma.length >= 2 && /^[A-Za-z]/.test(afterComma)) {
-      semaiNativeLog(`[semai-sig] firstNameFromDisplay: "${name}" → "Last, First" format → "${afterComma.toLowerCase()}"`);
-      return afterComma.toLowerCase();
+    if (afterComma && afterComma.length >= 2 && /^\p{L}/u.test(afterComma)) {
+      const foldedAfterComma = semaiFoldNameForMatch(afterComma);
+      semaiNativeLog(`[semai-sig] firstNameFromDisplay: "${name}" → "Last, First" format → "${foldedAfterComma}"`);
+      return foldedAfterComma;
     }
   }
   // "First [Middle] Last" → take the first whitespace-separated token
-  const first = (name.split(/[\s,<(@]+/)[0] || "").toLowerCase();
+  const first = semaiFoldNameForMatch(name.split(/[\s,<(@]+/)[0] || "");
   semaiNativeLog(`[semai-sig] firstNameFromDisplay: "${name}" → "First Last" format → "${first}"`);
   return first;
 }
@@ -1214,7 +1221,7 @@ function semaiGetSenderFirstName(bodyEl) {
         const cleaned = raw.replace(/^from[:\s]+/i, "");
         const firstName = semaiFirstNameFromDisplayName(cleaned);
         semaiNativeLog(`[semai-sig] getSenderFirstName: selector="${sel}" raw="${raw}" → firstName="${firstName}"`);
-        if (firstName && firstName.length >= 2 && /^[A-Za-z]/.test(firstName)) {
+        if (firstName && firstName.length >= 2 && /^\p{L}/u.test(firstName)) {
           semaiNativeLog(`[semai-sig] getSenderFirstName: resolved to "${firstName}"`);
           return firstName;
         }
@@ -1256,7 +1263,7 @@ function semaiGetSenderNameTokens(bodyEl) {
         const cleaned = raw.replace(/^from[:\s]+/i, "");
         // Split on commas, spaces, angle brackets, parens — get all tokens
         const tokens = cleaned.split(/[\s,<(@]+/)
-          .map(t => t.replace(/[^A-Za-z]/g, "").toLowerCase())
+          .map((t) => semaiFoldNameForMatch(t.replace(/[^\p{L}]/gu, "")))
           .filter(t => t.length >= 2); // strip single-letter initials
         if (tokens.length > 0) return tokens;
       } catch (e) { /* ignore invalid selectors */ }
@@ -1301,7 +1308,7 @@ function semaiFindSenderAnchor(body, senderName) {
     if (lines.length === 2 && SEMAI_CLOSING_RE.test(lines[0])) {
       const nameWords = lines[1].split(/\s+/);
       const nameOk = nameWords.length <= 3 && nameWords.every(w => /^[A-Z]/.test(w));
-      const nameMatches = !senderName || lines[1].toLowerCase().startsWith(senderName);
+      const nameMatches = !senderName || semaiFoldNameForMatch(lines[1]).startsWith(semaiFoldNameForMatch(senderName));
       if (nameOk && nameMatches && i + 1 < kids.length) {
         return kids[i + 1];
       }
@@ -1312,7 +1319,7 @@ function semaiFindSenderAnchor(body, senderName) {
     if (lines.length === 1) {
       const words = raw.split(/\s+/);
       const isShortName = words.length >= 1 && words.length <= 3 && raw.length <= 30 && words.every(w => /^[A-Z]/.test(w));
-      const nameMatches = !senderName || raw.toLowerCase().startsWith(senderName);
+      const nameMatches = !senderName || semaiFoldNameForMatch(raw).startsWith(semaiFoldNameForMatch(senderName));
       if (isShortName && nameMatches && i > 0) {
         const prevRaw = (kids[i - 1].innerText || kids[i - 1].textContent || "").trim();
         if (SEMAI_CLOSING_RE.test(prevRaw)) {
@@ -1328,7 +1335,7 @@ function semaiFindSenderAnchor(body, senderName) {
     // 120 chars (academic/medical dept names can exceed 80) but cap at 2 long
     // lines — a real paragraph would have far more text.
     if (!senderName) continue;
-    if (firstLine.toLowerCase().startsWith(senderName)) {
+    if (semaiFoldNameForMatch(firstLine).startsWith(semaiFoldNameForMatch(senderName))) {
       const charAfter = firstLine[senderName.length];
       if (!charAfter || /[\s,.]/.test(charAfter)) {
         const longLines = lines.filter(l => l.length > 120).length;
@@ -1738,32 +1745,133 @@ async function semaiCreateGitHubIssue(message, subject, reason) {
 }
 
 // ── Live fix preview ─────────────────────────────────────────────────────────
+// Calls Claude API directly from the content script (Safari service workers
+// have limited cross-origin fetch support, but content scripts work fine
+// with host_permissions — same pattern as the GitHub API calls above).
+
+const SEMAI_APPLY_FIX_TOOL = {
+  name: "apply_fix",
+  description:
+    "Apply a CSS or JS patch to fix the reported Outlook rendering issue. " +
+    "The patch code will be injected into the page via a <script> or <style> tag.",
+  input_schema: {
+    type: "object",
+    properties: {
+      explanation: {
+        type: "string",
+        description: "One paragraph explaining what the issue is and how the patch fixes it.",
+      },
+      patchType: {
+        type: "string",
+        enum: ["js", "css"],
+        description: "Whether the fix is a JavaScript patch or a CSS patch.",
+      },
+      patchCode: {
+        type: "string",
+        description:
+          "The complete, self-contained patch code. " +
+          "JS patches are executed via a <script> tag in the page main world. " +
+          "CSS patches are injected as a <style> tag. " +
+          "JS patches MUST process existing DOM elements synchronously (querySelectorAll loop) " +
+          "and may additionally install a MutationObserver for future elements.",
+      },
+      urlPattern: {
+        type: "string",
+        description:
+          "A regex pattern matching Outlook URLs where this patch should apply. " +
+          "Example: ^https://outlook\\.(office(365)?\\.com|cloud\\.microsoft)/",
+      },
+    },
+    required: ["explanation", "patchType", "patchCode", "urlPattern"],
+  },
+};
+
+const SEMAI_PREVIEW_FIX_SYSTEM_PROMPT = [
+  "You are a self-healing engine for a Safari Web Extension called \"semai\" (also known as \"remou\").",
+  "The extension transforms Outlook Web email threads into a chat-like interface.",
+  "",
+  "When users report rendering issues, you produce a minimal CSS or JS patch to fix them.",
+  "",
+  "## How patches work",
+  "- JS patches: injected as a <script> tag in the page's main world. They have full DOM/window access.",
+  "- CSS patches: injected as a <style> tag.",
+  "- Patches must be self-contained (no imports, no external dependencies).",
+  "- JS patches MUST process all matching elements synchronously with querySelectorAll on first execution.",
+  "  MutationObserver may be added for future elements, but the initial pass is mandatory.",
+  "",
+  "## Outlook URL patterns",
+  "Outlook Web runs on these domains:",
+  "- outlook.office.com",
+  "- outlook.office365.com",
+  "- outlook.cloud.microsoft",
+  "",
+  "Use this urlPattern to match all of them: ^https://outlook\\\\.(office(365)?\\\\.com|cloud\\\\.microsoft)/",
+  "",
+  "## Guidelines",
+  "- Prefer CSS patches when the fix is purely visual (hiding, repositioning, styling).",
+  "- Use JS patches only when DOM manipulation is required (rewriting text, moving elements, etc.).",
+  "- Keep patches minimal — fix only the reported issue.",
+  "- Do not modify elements outside the scope of the bug report.",
+].join("\n");
 
 async function semaiRequestPreviewFix(message, subject, reason) {
-  return new Promise((resolve, reject) => {
-    chrome.runtime.sendMessage({
-      type: 'PREVIEW_FIX',
-      payload: {
-        reason,
-        cleanHtml: message.cleanHtml,
-        rawHtml: message.rawHtml,
-        senderInfo: message.sender,
-        subject,
-        pageUrl: window.location.href,
-        anthropicApiKey: typeof REMOU_ANTHROPIC_API_KEY !== 'undefined' ? REMOU_ANTHROPIC_API_KEY : null
-      }
-    }, (response) => {
-      if (chrome.runtime.lastError) {
-        reject(new Error(chrome.runtime.lastError.message));
-        return;
-      }
-      if (!response?.ok) {
-        reject(new Error(response?.error || 'Preview fix failed'));
-        return;
-      }
-      resolve(response);
-    });
+  const apiKey = typeof REMOU_ANTHROPIC_API_KEY !== "undefined" ? REMOU_ANTHROPIC_API_KEY : null;
+  if (!apiKey) throw new Error("Anthropic API key not configured in secrets.js");
+
+  const userMessage = [
+    "## Bug report",
+    "The user reported an issue while viewing: " + window.location.href,
+    "Subject: " + (subject || "(no subject)"),
+    "Sender: " + (message.sender?.name || "Unknown") + " <" + (message.sender?.email || "unknown") + ">",
+    "",
+    "## User's description",
+    reason || "(no description)",
+    "",
+    "## Clean HTML (processed by extension)",
+    "```html",
+    (message.cleanHtml || "").slice(0, 8000),
+    "```",
+    "",
+    "## Original HTML (raw from Outlook DOM)",
+    "```html",
+    (message.rawHtml || "").slice(0, 8000),
+    "```",
+  ].join("\n");
+
+  const response = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      model: "claude-sonnet-4-6",
+      max_tokens: 4096,
+      system: SEMAI_PREVIEW_FIX_SYSTEM_PROMPT,
+      tools: [SEMAI_APPLY_FIX_TOOL],
+      tool_choice: { type: "tool", name: "apply_fix" },
+      messages: [{ role: "user", content: userMessage }],
+    }),
   });
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.error?.message || "Anthropic API error " + response.status);
+  }
+
+  const data = await response.json();
+  const toolUse = data.content?.find(
+    (block) => block.type === "tool_use" && block.name === "apply_fix"
+  );
+  if (!toolUse) throw new Error("Claude did not return a fix suggestion.");
+
+  return {
+    explanation: toolUse.input.explanation,
+    patchType: toolUse.input.patchType,
+    patchCode: toolUse.input.patchCode,
+    urlPattern: toolUse.input.urlPattern,
+  };
 }
 
 function semaiInjectPreviewPatch(patchType, patchCode) {
@@ -2986,7 +3094,7 @@ function semaiStripTrailingSignOff(container, senderFirstName) {
   if (lastLines.length === 2 && SEMAI_CLOSING_RE.test(lastLines[0])) {
     const nameWords = lastLines[1].split(/\s+/);
     if (nameWords.length <= 3 && nameWords.every(w => /^[A-Z]/.test(w))) {
-      if (!senderFirstName || lastLines[1].toLowerCase().startsWith(senderFirstName)) {
+      if (!senderFirstName || semaiFoldNameForMatch(lastLines[1]).startsWith(semaiFoldNameForMatch(senderFirstName))) {
         kids[last].remove();
         return;
       }
@@ -2997,7 +3105,7 @@ function semaiStripTrailingSignOff(container, senderFirstName) {
   if (lastLines.length === 1 && last > 0) {
     const words = lastRaw.split(/\s+/);
     if (words.length <= 3 && lastRaw.length <= 30 && words.every(w => /^[A-Z]/.test(w))) {
-      if (!senderFirstName || lastRaw.toLowerCase().startsWith(senderFirstName)) {
+      if (!senderFirstName || semaiFoldNameForMatch(lastRaw).startsWith(semaiFoldNameForMatch(senderFirstName))) {
         const prevRaw = (kids[last - 1].innerText || kids[last - 1].textContent || "").trim();
         if (SEMAI_CLOSING_RE.test(prevRaw)) {
           kids[last].remove();
