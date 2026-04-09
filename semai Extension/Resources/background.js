@@ -160,101 +160,110 @@ function nativeLog(text) {
   } catch { /* ignore */ }
 }
 
+// ── Unified browser.runtime message handler ──────────────────────────────────
+// Single listener for all browser.runtime messages. Having multiple listeners
+// in Safari can cause the message channel to close prematurely when one listener
+// returns undefined while another needs async response.
+
 browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (!message || message.type !== 'PREVIEW_FIX') return;
+  if (!message || !message.type) return false;
 
-  const { reason, cleanHtml, rawHtml, senderInfo, subject, pageUrl, anthropicApiKey } =
-    message.payload || {};
-
-  if (!anthropicApiKey) {
-    sendResponse({ ok: false, error: 'Anthropic API key not configured in secrets.js' });
-    return;
+  // ── Xcode log relay ──
+  if (message.type === "semaiLog") {
+    try {
+      browser.runtime.sendNativeMessage("yam.team.remou", { log: message.text });
+    } catch { /* ignore */ }
+    return false;
   }
 
-  nativeLog('[semai-preview] background.js received PREVIEW_FIX');
+  // ── Live fix preview ──
+  if (message.type === "PREVIEW_FIX") {
+    const { reason, cleanHtml, rawHtml, senderInfo, subject, pageUrl, anthropicApiKey } =
+      message.payload || {};
 
-  const userMessage = [
-    '## Bug report',
-    'The user reported an issue while viewing: ' + (pageUrl || ''),
-    'Subject: ' + (subject || '(no subject)'),
-    'Sender: ' + (senderInfo?.name || 'Unknown') + ' <' + (senderInfo?.email || 'unknown') + '>',
-    '',
-    '## User description',
-    reason || '(no description)',
-    '',
-    '## Clean HTML (processed by extension)',
-    '```html',
-    (cleanHtml || '').slice(0, 8000),
-    '```',
-    '',
-    '## Original HTML (raw from Outlook DOM)',
-    '```html',
-    (rawHtml || '').slice(0, 8000),
-    '```',
-  ].join('\n');
+    if (!anthropicApiKey) {
+      sendResponse({ ok: false, error: 'Anthropic API key not configured in secrets.js' });
+      return false;
+    }
 
-  const body = JSON.stringify({
-    model: 'claude-sonnet-4-6',
-    max_tokens: 4096,
-    system: PREVIEW_FIX_SYSTEM_PROMPT,
-    tools: [APPLY_FIX_TOOL],
-    tool_choice: { type: 'tool', name: 'apply_fix' },
-    messages: [{ role: 'user', content: userMessage }],
-  });
+    nativeLog('[semai-preview] background.js received PREVIEW_FIX');
 
-  nativeLog('[semai-preview] Calling Anthropic API (' + body.length + ' chars)...');
+    const userMessage = [
+      '## Bug report',
+      'The user reported an issue while viewing: ' + (pageUrl || ''),
+      'Subject: ' + (subject || '(no subject)'),
+      'Sender: ' + (senderInfo?.name || 'Unknown') + ' <' + (senderInfo?.email || 'unknown') + '>',
+      '',
+      '## User description',
+      reason || '(no description)',
+      '',
+      '## Clean HTML (processed by extension)',
+      '```html',
+      (cleanHtml || '').slice(0, 8000),
+      '```',
+      '',
+      '## Original HTML (raw from Outlook DOM)',
+      '```html',
+      (rawHtml || '').slice(0, 8000),
+      '```',
+    ].join('\n');
 
-  fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'x-api-key': anthropicApiKey,
-      'anthropic-version': '2023-06-01',
-      'content-type': 'application/json',
-    },
-    body,
-  })
-    .then((res) => {
-      nativeLog('[semai-preview] Response status: ' + res.status);
-      if (!res.ok) {
-        return res.text().then((t) => {
-          nativeLog('[semai-preview] Error body: ' + t.slice(0, 500));
-          const parsed = (() => { try { return JSON.parse(t); } catch { return {}; } })();
-          return Promise.reject(new Error(parsed.error?.message || 'HTTP ' + res.status + ': ' + t.slice(0, 200)));
-        });
-      }
-      return res.json();
-    })
-    .then((data) => {
-      const toolUse = data.content?.find(
-        (b) => b.type === 'tool_use' && b.name === 'apply_fix'
-      );
-      if (!toolUse) {
-        nativeLog('[semai-preview] No tool_use block. Blocks: ' + JSON.stringify((data.content || []).map(b => b.type)));
-        sendResponse({ ok: false, error: 'Claude did not return a fix suggestion.' });
-        return;
-      }
-      nativeLog('[semai-preview] Got patch: type=' + toolUse.input.patchType + ' code=' + (toolUse.input.patchCode || '').length + ' chars');
-      sendResponse({
-        ok: true,
-        explanation: toolUse.input.explanation,
-        patchType: toolUse.input.patchType,
-        patchCode: toolUse.input.patchCode,
-        urlPattern: toolUse.input.urlPattern,
-      });
-    })
-    .catch((err) => {
-      nativeLog('[semai-preview] Fetch error: ' + err.message);
-      sendResponse({ ok: false, error: err.message || 'Preview fix request failed.' });
+    const body = JSON.stringify({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 4096,
+      system: PREVIEW_FIX_SYSTEM_PROMPT,
+      tools: [APPLY_FIX_TOOL],
+      tool_choice: { type: 'tool', name: 'apply_fix' },
+      messages: [{ role: 'user', content: userMessage }],
     });
 
-  return true; // keep message channel open for async response
-});
+    nativeLog('[semai-preview] Calling Anthropic API (' + body.length + ' chars)...');
 
-// ── Xcode log relay ───────────────────────────────────────────────────────────
-// Receives { type: "semaiLog", text: "..." } from contentScript.js and
-// forwards to the native host so the message appears in the Xcode console.
-browser.runtime.onMessage.addListener((message) => {
-  if (message && message.type === "semaiLog") {
-    browser.runtime.sendNativeMessage("yam.team.remou", { log: message.text });
+    fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'x-api-key': anthropicApiKey,
+        'anthropic-version': '2023-06-01',
+        'content-type': 'application/json',
+      },
+      body,
+    })
+      .then((res) => {
+        nativeLog('[semai-preview] Response status: ' + res.status);
+        if (!res.ok) {
+          return res.text().then((t) => {
+            nativeLog('[semai-preview] Error body: ' + t.slice(0, 500));
+            const parsed = (() => { try { return JSON.parse(t); } catch { return {}; } })();
+            return Promise.reject(new Error(parsed.error?.message || 'HTTP ' + res.status + ': ' + t.slice(0, 200)));
+          });
+        }
+        return res.json();
+      })
+      .then((data) => {
+        const toolUse = data.content?.find(
+          (b) => b.type === 'tool_use' && b.name === 'apply_fix'
+        );
+        if (!toolUse) {
+          nativeLog('[semai-preview] No tool_use block. Blocks: ' + JSON.stringify((data.content || []).map(b => b.type)));
+          sendResponse({ ok: false, error: 'Claude did not return a fix suggestion.' });
+          return;
+        }
+        nativeLog('[semai-preview] Got patch: type=' + toolUse.input.patchType + ' code=' + (toolUse.input.patchCode || '').length + ' chars');
+        sendResponse({
+          ok: true,
+          explanation: toolUse.input.explanation,
+          patchType: toolUse.input.patchType,
+          patchCode: toolUse.input.patchCode,
+          urlPattern: toolUse.input.urlPattern,
+        });
+      })
+      .catch((err) => {
+        nativeLog('[semai-preview] Fetch error: ' + err.message);
+        sendResponse({ ok: false, error: err.message || 'Preview fix request failed.' });
+      });
+
+    return true; // keep message channel open for async response
   }
+
+  return false;
 });
