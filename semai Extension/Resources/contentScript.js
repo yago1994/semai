@@ -1524,12 +1524,70 @@ function semaiEscapeHtml(text) {
     .replace(/'/g, "&#39;");
 }
 
+// Capture a sanitized snapshot of the reading pane for use as a test fixture.
+// Strips: script tags, inline styles, GUIDs in attribute values, message body text.
+// Keeps: element structure, class names, data-* attributes, ARIA roles.
+function semaiCaptureFixtureHtml() {
+  const CONTAINER_SELECTORS = [
+    '#ReadingPaneContainerId',
+    '[data-app-section="ConversationContainer"]',
+    '[aria-label*="Reading Pane" i]',
+    '.ReadingPane',
+  ];
+
+  let root = null;
+  for (const sel of CONTAINER_SELECTORS) {
+    root = document.querySelector(sel);
+    if (root) break;
+  }
+  if (!root) return null;
+
+  const clone = root.cloneNode(true);
+
+  // 1. Remove script tags
+  clone.querySelectorAll('script').forEach(el => el.remove());
+
+  // 2. Remove inline styles (noisy, never needed for fixture assertions)
+  clone.querySelectorAll('[style]').forEach(el => el.removeAttribute('style'));
+
+  // 3. Redact GUIDs and base64-ish tokens in attribute values
+  const GUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
+  const TOKEN_RE = /[A-Za-z0-9+/]{40,}={0,2}/g;
+  function redactAttrs(el) {
+    for (const attr of Array.from(el.attributes)) {
+      let v = attr.value;
+      v = v.replace(GUID_RE, 'GUID_REDACTED');
+      v = v.replace(TOKEN_RE, 'TOKEN_REDACTED');
+      if (v !== attr.value) el.setAttribute(attr.name, v);
+    }
+    for (const child of Array.from(el.children)) redactAttrs(child);
+  }
+  redactAttrs(clone);
+
+  // 4. Replace actual email body text with a placeholder (keep DOM structure intact)
+  clone.querySelectorAll('[aria-label="Message body"]:not([contenteditable])').forEach(body => {
+    function scrubTextNodes(node) {
+      for (const child of Array.from(node.childNodes)) {
+        if (child.nodeType === Node.TEXT_NODE) {
+          if (child.textContent.trim()) child.textContent = '[email content redacted]';
+        } else if (child.nodeType === Node.ELEMENT_NODE) {
+          scrubTextNodes(child);
+        }
+      }
+    }
+    scrubTextNodes(body);
+  });
+
+  return clone.outerHTML;
+}
+
 function semaiBuildGitHubIssueBody(message, subject, reason) {
   const senderName = message.sender?.name || "Unknown";
   const senderEmail = message.sender?.email || "Unknown";
   const timestamp = message.timestamp || "Unknown";
+  const fixtureHtml = semaiCaptureFixtureHtml();
 
-  return [
+  const parts = [
     "## Reported from REMOU",
     "",
     `- Subject: ${subject || "Conversation"}`,
@@ -1552,8 +1610,22 @@ function semaiBuildGitHubIssueBody(message, subject, reason) {
     "",
     "```html",
     message.rawHtml || "",
-    "```"
-  ].join("\n");
+    "```",
+  ];
+
+  if (fixtureHtml) {
+    parts.push(
+      "",
+      "## Reading Pane Fixture HTML",
+      "<!-- Sanitized snapshot for test fixtures. GUIDs, tokens, and email body text have been redacted. -->",
+      "",
+      "```html",
+      fixtureHtml,
+      "```"
+    );
+  }
+
+  return parts.join("\n");
 }
 
 async function semaiCreateGitHubIssue(message, subject, reason) {
@@ -2217,6 +2289,104 @@ function semaiGetMessageTimestamp(bodyEl) {
   return "";
 }
 
+function semaiGetMessageCard(bodyEl) {
+  const labeledMessageCard = bodyEl.closest(
+    '[aria-label="Email message"], [aria-label*="Email message" i], [role="group"][aria-label*="message" i]'
+  );
+  if (labeledMessageCard) {
+    return labeledMessageCard;
+  }
+
+  const bodyContainer = bodyEl.closest('[data-test-id="mailMessageBodyContainer"]');
+  if (bodyContainer?.parentElement) {
+    return bodyContainer.parentElement;
+  }
+
+  let ancestor = bodyEl.parentElement;
+  for (let depth = 0; depth < 8 && ancestor; depth += 1, ancestor = ancestor.parentElement) {
+    if (ancestor.querySelector('time, [data-testid="sentTime"], a[href^="mailto:"]')) {
+      return ancestor;
+    }
+  }
+
+  return bodyEl.parentElement;
+}
+
+function semaiMessageHasAttachmentBlock(bodyEl) {
+  const scopes = [];
+  const messageCard = semaiGetMessageCard(bodyEl);
+  if (messageCard) {
+    scopes.push(messageCard);
+  }
+
+  const bodyContainer = bodyEl.closest('[data-test-id="mailMessageBodyContainer"]');
+  if (bodyContainer) {
+    scopes.push(bodyContainer);
+
+    let sibling = bodyContainer.previousElementSibling;
+    while (sibling) {
+      if (!scopes.includes(sibling)) {
+        scopes.push(sibling);
+      }
+      sibling = sibling.previousElementSibling;
+    }
+
+    sibling = bodyContainer.nextElementSibling;
+    while (sibling) {
+      if (!scopes.includes(sibling)) {
+        scopes.push(sibling);
+      }
+      sibling = sibling.nextElementSibling;
+    }
+  }
+
+  let ancestor = bodyEl.parentElement;
+  for (let depth = 0; depth < 8 && ancestor; depth += 1, ancestor = ancestor.parentElement) {
+    if (!scopes.includes(ancestor)) {
+      scopes.push(ancestor);
+    }
+  }
+
+  const attachmentSelectors = [
+    '[role="heading"][id$="_ATTACHMENTS"]',
+    '[id$="_ATTACHMENTS"]',
+    '[role="listbox"][aria-label="file attachments"]',
+    '[role="listbox"][aria-label*="attachments" i]',
+    '[role="option"][aria-label*=" open " i]',
+    '.av-container [role="option"]'
+  ];
+
+  const attachmentLabelRe = /\.(pdf|doc|docx|xls|xlsx|ppt|pptx|png|jpg|jpeg|zip|csv|txt)\b.+\bopen\b/i;
+
+  return scopes.some(scope => {
+    if (!(scope instanceof Element)) return false;
+
+    return attachmentSelectors.some(selector => {
+      return Array.from(scope.querySelectorAll(selector)).some(match => {
+        if (!(match instanceof Element) || bodyEl.contains(match)) {
+          return false;
+        }
+
+        const label = (
+          match.getAttribute("aria-label") ||
+          match.getAttribute("title") ||
+          match.textContent ||
+          ""
+        ).replace(/\s+/g, " ").trim();
+
+        if (
+          match.matches('[role="heading"][id$="_ATTACHMENTS"], [id$="_ATTACHMENTS"]') ||
+          match.matches('[role="listbox"][aria-label*="attachments" i]')
+        ) {
+          return true;
+        }
+
+        return attachmentLabelRe.test(label);
+      });
+    });
+  });
+}
+
 function semaiIsTransparentPlaceholderImageSrc(src) {
   return typeof src === "string" && src.startsWith("data:image/gif;base64,R0lGODlhAQABAIA");
 }
@@ -2622,7 +2792,8 @@ function semaiExtractThreadMessages() {
     const cleanHtml = semaiCleanBodyClone(bodyEl, senderFirstName);
     const rawHtml = bodyEl.dataset.semaiOriginalHtml || bodyEl.innerHTML;
     const isMe = semaiIsCurrentUser(sender.name, sender.email);
-    return { sender, timestamp, cleanHtml, rawHtml, isMe };
+    const hasAttachment = semaiMessageHasAttachmentBlock(bodyEl);
+    return { sender, timestamp, cleanHtml, rawHtml, isMe, hasAttachment };
   });
 }
 
@@ -2692,12 +2863,25 @@ function semaiCreateChatOverlay(messages, subject) {
     body.innerHTML = msg.cleanHtml;
     bubble.appendChild(body);
 
+    const attachmentBadge = msg.hasAttachment
+      ? Object.assign(document.createElement("span"), {
+          className: "semai-chat-attachment-badge",
+          textContent: "📎"
+        })
+      : null;
+
     if (msg.isMe) {
+      if (attachmentBadge) {
+        row.appendChild(attachmentBadge);
+      }
       row.appendChild(bubble);
       row.appendChild(avatar);
     } else {
       row.appendChild(avatar);
       row.appendChild(bubble);
+      if (attachmentBadge) {
+        row.appendChild(attachmentBadge);
+      }
     }
     chatScroll.appendChild(row);
   });
