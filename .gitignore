@@ -1,5 +1,4 @@
 # API keys — never commit
 semai Extension/Resources/secrets.js
 /node_modules
-package.json
 package-lock.json
