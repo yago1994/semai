@@ -485,6 +485,15 @@ body.semai-calibrating * {
 /* Message body inside bubble */
 .semai-chat-body {
   font-size: 13px;
+  cursor: text;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.semai-chat-body,
+.semai-chat-body * {
+  user-select: text;
+  -webkit-user-select: text;
 }
 
 .semai-chat-body p {
@@ -512,6 +521,82 @@ body.semai-calibrating * {
   background: rgba(37, 99, 235, 0.08);
   box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.9), 0 0 0 8px rgba(37, 99, 235, 0.12);
   transform: translateY(-1px);
+}
+
+.semai-report-popover {
+  position: fixed;
+  z-index: 1000001;
+  width: min(320px, calc(100vw - 24px));
+  padding: 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: 0 16px 40px rgba(15, 23, 42, 0.2);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+
+.semai-report-popover-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: #0f172a;
+  margin-bottom: 8px;
+}
+
+.semai-report-popover-input {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 92px;
+  resize: vertical;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  background: #ffffff;
+  color: #0f172a;
+  font: inherit;
+  line-height: 1.4;
+}
+
+.semai-report-popover-input:focus {
+  outline: none;
+  border-color: rgba(220, 38, 38, 0.45);
+  box-shadow: 0 0 0 3px rgba(220, 38, 38, 0.12);
+}
+
+.semai-report-popover-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.semai-report-popover-cancel,
+.semai-report-popover-send {
+  border-radius: 999px;
+  padding: 8px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.semai-report-popover-cancel {
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  background: #ffffff;
+  color: #334155;
+}
+
+.semai-report-popover-send {
+  border: none;
+  background: #dc2626;
+  color: #ffffff;
+  box-shadow: 0 8px 18px rgba(220, 38, 38, 0.22);
+}
+
+.semai-report-popover-cancel:disabled,
+.semai-report-popover-send:disabled {
+  opacity: 0.6;
+  cursor: default;
+  box-shadow: none;
 }
 
 .semai-chat-composer {

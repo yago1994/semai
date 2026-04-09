@@ -1496,6 +1496,7 @@ let semaiChatViewActive = false;
 let semaiCurrentUser = null; // { name, email, initials }
 let semaiReportHoverRow = null;
 let semaiReportModeOverlay = null;
+let semaiReportPopoverEl = null;
 
 // Deterministic avatar colour from name — 8-colour palette
 const SEMAI_AVATAR_COLORS = [
@@ -1523,15 +1524,10 @@ function semaiEscapeHtml(text) {
     .replace(/'/g, "&#39;");
 }
 
-function semaiBuildGitHubIssueBody(message, subject) {
+function semaiBuildGitHubIssueBody(message, subject, reason) {
   const senderName = message.sender?.name || "Unknown";
   const senderEmail = message.sender?.email || "Unknown";
   const timestamp = message.timestamp || "Unknown";
-  const excerpt = (message.cleanHtml || "")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 500);
 
   return [
     "## Reported from REMOU",
@@ -1542,9 +1538,9 @@ function semaiBuildGitHubIssueBody(message, subject) {
     `- Timestamp: ${timestamp}`,
     `- Page URL: ${window.location.href}`,
     "",
-    "## Excerpt",
+    "## Reason It's An Issue",
     "",
-    excerpt || "No text extracted.",
+    reason || "No reason provided.",
     "",
     "## Clean HTML",
     "",
@@ -1560,7 +1556,7 @@ function semaiBuildGitHubIssueBody(message, subject) {
   ].join("\n");
 }
 
-async function semaiCreateGitHubIssue(message, subject) {
+async function semaiCreateGitHubIssue(message, subject, reason) {
   if (!REMOU_GITHUB_TOKEN) {
     throw new Error("Missing GitHub token in secrets.js.");
   }
@@ -1583,7 +1579,7 @@ async function semaiCreateGitHubIssue(message, subject) {
     },
     body: JSON.stringify({
       title: titleParts.join(" | ").slice(0, 240),
-      body: semaiBuildGitHubIssueBody(message, subject)
+      body: semaiBuildGitHubIssueBody(message, subject, reason)
     })
   });
 
@@ -1610,10 +1606,108 @@ function semaiSetReportModeStatus(overlay, message, tone = "neutral") {
 }
 
 function semaiHandleReportModeKeydown(event) {
-  if (event.key !== "Escape" || !semaiReportModeOverlay) return;
+  if (event.key !== "Escape") return;
+
+  if (semaiReportPopoverEl) {
+    event.preventDefault();
+    semaiCloseReportPopover();
+    if (semaiReportModeOverlay) {
+      semaiSetReportModeStatus(
+        semaiReportModeOverlay,
+        "Hover an email, click to report it, or press Esc to cancel.",
+        "report"
+      );
+    }
+    return;
+  }
+
+  if (!semaiReportModeOverlay) return;
 
   event.preventDefault();
   semaiExitReportMode(semaiReportModeOverlay);
+}
+
+function semaiCloseReportPopover() {
+  semaiReportPopoverEl?.remove();
+  semaiReportPopoverEl = null;
+}
+
+function semaiOpenReportPopover(overlay, message, subject, clientX, clientY) {
+  semaiCloseReportPopover();
+
+  const popover = document.createElement("div");
+  popover.className = "semai-report-popover";
+  popover.innerHTML = `
+    <div class="semai-report-popover-title">Report issue</div>
+    <textarea
+      class="semai-report-popover-input"
+      rows="4"
+      placeholder="What is wrong with this email bubble?"
+    ></textarea>
+    <div class="semai-report-popover-actions">
+      <button type="button" class="semai-report-popover-cancel">Cancel</button>
+      <button type="button" class="semai-report-popover-send">Send</button>
+    </div>
+  `;
+
+  const cancelBtn = popover.querySelector(".semai-report-popover-cancel");
+  const sendBtn = popover.querySelector(".semai-report-popover-send");
+  const input = popover.querySelector(".semai-report-popover-input");
+
+  cancelBtn.addEventListener("click", () => {
+    semaiCloseReportPopover();
+    semaiSetReportModeStatus(
+      overlay,
+      "Hover an email, click to report it, or press Esc to cancel.",
+      "report"
+    );
+  });
+
+  sendBtn.addEventListener("click", async () => {
+    const reason = input.value.trim();
+    if (!reason) {
+      input.focus();
+      semaiSetReportModeStatus(overlay, "Type the reason this message is misbehaving.", "error");
+      return;
+    }
+
+    cancelBtn.disabled = true;
+    sendBtn.disabled = true;
+    input.disabled = true;
+    semaiSetReportModeStatus(overlay, "Creating GitHub issue…", "report");
+
+    try {
+      const issue = await semaiCreateGitHubIssue(message, subject, reason);
+      semaiCloseReportPopover();
+      semaiExitReportMode(
+        overlay,
+        "Issue has been reported successfully.",
+        "success"
+      );
+    } catch (error) {
+      cancelBtn.disabled = false;
+      sendBtn.disabled = false;
+      input.disabled = false;
+      semaiSetReportModeStatus(overlay, error.message || "Failed to create GitHub issue.", "error");
+    }
+  });
+
+  popover.addEventListener("click", (event) => {
+    event.stopPropagation();
+  });
+
+  document.body.appendChild(popover);
+  semaiReportPopoverEl = popover;
+
+  const margin = 12;
+  const rect = popover.getBoundingClientRect();
+  const left = Math.min(clientX + 16, window.innerWidth - rect.width - margin);
+  const top = Math.min(clientY + 16, window.innerHeight - rect.height - margin);
+  popover.style.left = `${Math.max(margin, left)}px`;
+  popover.style.top = `${Math.max(margin, top)}px`;
+
+  semaiSetReportModeStatus(overlay, "Describe the issue, then send the ticket.", "report");
+  input.focus();
 }
 
 function semaiExitReportMode(overlay, statusMessage, tone = "neutral") {
@@ -1624,6 +1718,7 @@ function semaiExitReportMode(overlay, statusMessage, tone = "neutral") {
   document.removeEventListener("keydown", semaiHandleReportModeKeydown, true);
   semaiReportModeOverlay = null;
   semaiClearReportHover();
+  semaiCloseReportPopover();
 
   const reportButton = overlay.querySelector("#semai-chat-report-issue-btn");
   if (reportButton) {
@@ -1706,31 +1801,12 @@ async function semaiHandleReportRowClick(event) {
   event.preventDefault();
   event.stopPropagation();
 
-  const reportButton = overlay.querySelector("#semai-chat-report-issue-btn");
   const index = Number(row.dataset.reportIndex);
   const message = overlay._semaiMessages?.[index];
   const subject = overlay._semaiSubject || "Conversation";
   if (!message) return;
 
-  if (reportButton) {
-    reportButton.disabled = true;
-  }
-
-  semaiSetReportModeStatus(overlay, "Creating GitHub issue…", "report");
-
-  try {
-    const issue = await semaiCreateGitHubIssue(message, subject);
-    semaiExitReportMode(
-      overlay,
-      `Issue #${issue.number} created for ${message.sender?.name || "this message"}.`,
-      "success"
-    );
-  } catch (error) {
-    semaiSetReportModeStatus(overlay, error.message || "Failed to create GitHub issue.", "error");
-    if (reportButton) {
-      reportButton.disabled = false;
-    }
-  }
+  semaiOpenReportPopover(overlay, message, subject, event.clientX, event.clientY);
 }
 
 function semaiGetCalibration() {
@@ -2141,6 +2217,97 @@ function semaiGetMessageTimestamp(bodyEl) {
   return "";
 }
 
+function semaiIsTransparentPlaceholderImageSrc(src) {
+  return typeof src === "string" && src.startsWith("data:image/gif;base64,R0lGODlhAQABAIA");
+}
+
+function semaiCloneImageNeedsResolution(img) {
+  if (!(img instanceof HTMLImageElement)) return false;
+
+  const imageType = img.getAttribute("data-imagetype") || "";
+  const originalSrc = img.getAttribute("originalsrc") || "";
+  const src = img.getAttribute("src") || "";
+
+  return (
+    /AttachmentByCid/i.test(imageType) ||
+    /^cid:/i.test(originalSrc) ||
+    semaiIsTransparentPlaceholderImageSrc(src)
+  );
+}
+
+function semaiLiveImageHasRenderableSource(img) {
+  if (!(img instanceof HTMLImageElement)) return false;
+
+  const src = img.currentSrc || img.getAttribute("src") || "";
+  if (!src || semaiIsTransparentPlaceholderImageSrc(src)) {
+    return false;
+  }
+
+  return !/^cid:/i.test(src);
+}
+
+function semaiIsImageOnlyBlock(el) {
+  if (!(el instanceof Element)) return false;
+
+  const meaningfulChildren = Array.from(el.childNodes).filter(node => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      return (node.textContent || "").replace(/\u00a0/g, " ").trim().length > 0;
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE) {
+      return false;
+    }
+    const child = node;
+    if (child.tagName === "BR") return false;
+    return true;
+  });
+
+  return meaningfulChildren.length > 0 && meaningfulChildren.every(node => (
+    node.nodeType === Node.ELEMENT_NODE && node.tagName === "IMG"
+  ));
+}
+
+function semaiRemoveUnresolvedImageBlock(img) {
+  if (!(img instanceof HTMLImageElement)) return;
+
+  let candidate = img;
+  while (candidate.parentElement && semaiIsImageOnlyBlock(candidate.parentElement)) {
+    candidate = candidate.parentElement;
+  }
+  candidate.remove();
+}
+
+function semaiResolveInlineImagesFromLiveDom(clone, bodyEl) {
+  const cloneImages = Array.from(clone.querySelectorAll("img"));
+  const liveImages = Array.from(bodyEl.querySelectorAll("img"));
+  const imageCount = Math.min(cloneImages.length, liveImages.length);
+
+  for (let index = 0; index < imageCount; index += 1) {
+    const cloneImg = cloneImages[index];
+    const liveImg = liveImages[index];
+
+    if (!semaiCloneImageNeedsResolution(cloneImg)) {
+      continue;
+    }
+
+    if (semaiLiveImageHasRenderableSource(liveImg)) {
+      const resolvedSrc = liveImg.currentSrc || liveImg.getAttribute("src");
+      cloneImg.setAttribute("src", resolvedSrc);
+
+      const liveSrcset = liveImg.getAttribute("srcset");
+      if (liveSrcset) {
+        cloneImg.setAttribute("srcset", liveSrcset);
+      } else {
+        cloneImg.removeAttribute("srcset");
+      }
+
+      cloneImg.removeAttribute("originalsrc");
+      continue;
+    }
+
+    semaiRemoveUnresolvedImageBlock(cloneImg);
+  }
+}
+
 // Clone a message body and strip signatures + quoted-reply blocks.
 // senderFirstName: lowercase first name of this message's sender (for sign-off detection).
 function semaiCleanBodyClone(bodyEl, senderFirstName) {
@@ -2150,6 +2317,8 @@ function semaiCleanBodyClone(bodyEl, senderFirstName) {
   } else {
     clone.innerHTML = bodyEl.innerHTML;
   }
+
+  semaiResolveInlineImagesFromLiveDom(clone, bodyEl);
 
   // ── 0a. Short-circuit: if the entire body is a compact branded signature, return empty ──
   semaiNativeLog(`[semai-sig] cleanBodyClone: senderFirstName="${senderFirstName}" bodyLen=${clone.textContent.length}`);
@@ -2246,6 +2415,9 @@ function semaiCleanBodyClone(bodyEl, senderFirstName) {
   // e.g. "Best,\nMichael" at the very end — remove the closing and name too.
   semaiStripTrailingSignOff(clone, senderFirstName);
 
+  // ── 8b. Remove trailing legal disclaimers / confidentiality notices ────
+  semaiStripTrailingDisclaimers(clone);
+
   // ── 9. Remove trailing empty elements ──
   while (clone.lastElementChild) {
     const last = clone.lastElementChild;
@@ -2264,6 +2436,30 @@ function semaiCleanBodyClone(bodyEl, senderFirstName) {
   });
 
   return clone.innerHTML.trim();
+}
+
+function semaiStripTrailingDisclaimers(container) {
+  const DISCLAIMER_RE = /(privileged|confidential|protected health information|PHI|not the intended recipient|strictly prohibited|notify the sender by return e-mail)/i;
+
+  function removeFromAndAfter(el) {
+    let sib = el;
+    while (sib) {
+      const next = sib.nextElementSibling;
+      sib.remove();
+      sib = next;
+    }
+  }
+
+  const blocks = Array.from(container.querySelectorAll("div, p, span, td"));
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    const text = (blocks[i].innerText || blocks[i].textContent || "").trim();
+    if (!text) continue;
+    if (!DISCLAIMER_RE.test(text)) continue;
+    if (text.length < 120) continue;
+
+    removeFromAndAfter(blocks[i]);
+    return;
+  }
 }
 
 function semaiStripQuotedReplyHeaders(container) {
@@ -2744,6 +2940,7 @@ function semaiDeactivateChatView() {
   const readingPane = overlay?.parentElement;
   document.removeEventListener("keydown", semaiHandleReportModeKeydown, true);
   semaiReportModeOverlay = null;
+  semaiCloseReportPopover();
   semaiClearReportHover();
   overlay?._semaiResizeObserver?.disconnect();
   if (overlay) overlay.remove();
