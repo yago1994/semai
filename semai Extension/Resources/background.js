@@ -115,11 +115,21 @@ const PREVIEW_FIX_SYSTEM_PROMPT = [
   'When users report rendering issues, you produce a minimal CSS or JS patch to fix them.',
   '',
   '## How patches work',
-  '- JS patches: injected as a <script> tag in the page main world. They have full DOM/window access.',
-  '- CSS patches: injected as a <style> tag.',
+  '- JS patches: injected into the page main world via chrome.scripting.executeScript. They have full DOM/window access.',
+  '- CSS patches: injected via chrome.scripting.insertCSS.',
   '- Patches must be self-contained (no imports, no external dependencies).',
   '- JS patches MUST process all matching elements synchronously with querySelectorAll on first execution.',
   '  MutationObserver may be added for future elements, but the initial pass is mandatory.',
+  '',
+  '## Extension DOM structure',
+  'The extension renders a chat overlay with these key elements:',
+  '- #semai-chat-overlay — the main overlay container',
+  '- .semai-chat-row — one row per email message (has data-report-index attribute)',
+  '- .semai-chat-row.semai-chat-me — rows sent by the current user',
+  '- .semai-chat-row.semai-chat-them — rows sent by others',
+  '- .semai-chat-avatar — the avatar circle showing sender initials (e.g. "GS" for "Gaelle Sabben")',
+  '- .semai-chat-bubble — the message bubble containing the email body',
+  '- .semai-chat-sender — sender name label shown above the bubble (on .semai-chat-them rows)',
   '',
   '## Outlook URL patterns',
   'Outlook Web runs on these domains: outlook.office.com, outlook.office365.com, outlook.cloud.microsoft',
@@ -129,6 +139,7 @@ const PREVIEW_FIX_SYSTEM_PROMPT = [
   '- Prefer CSS patches when the fix is purely visual.',
   '- Use JS patches only when DOM manipulation is required.',
   '- Keep patches minimal — fix only the reported issue.',
+  '- When the rendered HTML is provided, base your selectors on the ACTUAL class names visible in it.',
 ].join('\n');
 
 // ── Single chrome.runtime message handler ────────────────────────────────────
@@ -205,7 +216,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   // ── Live fix preview ──
   if (msg.type === 'PREVIEW_FIX') {
-    const { reason, cleanHtml, rawHtml, senderInfo, subject, pageUrl, anthropicApiKey } =
+    const { reason, cleanHtml, rawHtml, renderedHtml, senderInfo, subject, pageUrl, anthropicApiKey } =
       msg.payload || {};
 
     console.log('[semai-preview] Received PREVIEW_FIX message');
@@ -224,14 +235,19 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       '## User description',
       reason || '(no description)',
       '',
-      '## Clean HTML (processed by extension)',
+      '## Rendered chat overlay HTML (actual extension output — use these class names in your patch)',
       '```html',
-      (cleanHtml || '').slice(0, 8000),
+      (renderedHtml || '(not available)').slice(0, 6000),
+      '```',
+      '',
+      '## Clean HTML (email body processed by extension)',
+      '```html',
+      (cleanHtml || '').slice(0, 4000),
       '```',
       '',
       '## Original HTML (raw from Outlook DOM)',
       '```html',
-      (rawHtml || '').slice(0, 8000),
+      (rawHtml || '').slice(0, 4000),
       '```',
     ].join('\n');
 

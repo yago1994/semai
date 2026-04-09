@@ -1788,12 +1788,15 @@ async function semaiRequestPreviewFix(message, subject, reason) {
 
   return new Promise((resolve, reject) => {
     try {
+      const overlay = document.getElementById("semai-chat-overlay");
+      const renderedHtml = overlay ? overlay.innerHTML : "";
       chrome.runtime.sendMessage({
         type: "PREVIEW_FIX",
         payload: {
           reason,
           cleanHtml: (message.cleanHtml || "").slice(0, 8000),
           rawHtml: (message.rawHtml || "").slice(0, 8000),
+          renderedHtml,
           senderInfo: message.sender,
           subject,
           pageUrl: window.location.href,
