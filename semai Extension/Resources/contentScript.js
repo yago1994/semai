@@ -2016,6 +2016,7 @@ function semaiOpenReportPopover(overlay, message, subject, clientX, clientY) {
 
     try {
       const patch = await semaiRequestPreviewFix(message, subject, reason);
+      semaiNativeLog(`[semai-preview] Patch received patchType=${patch.patchType} codeLength=${(patch.patchCode||'').length} ok=${patch.ok}`);
       currentPatch = patch;
       semaiInjectPreviewPatch(patch.patchType, patch.patchCode);
       explanationEl.textContent = patch.explanation;
