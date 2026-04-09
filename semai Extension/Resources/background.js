@@ -91,6 +91,165 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   return true; // keep message channel open for async response
 });
 
+// ── Live fix preview via Claude API ──────────────────────────────────────────
+// Uses browser.runtime (not chrome.runtime) to match Safari's WebExtension API.
+// The fetch runs in the extension's origin, which bypasses CORS restrictions
+// that block content script fetches to api.anthropic.com.
+
+const APPLY_FIX_TOOL = {
+  name: 'apply_fix',
+  description:
+    'Apply a CSS or JS patch to fix the reported Outlook rendering issue.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      explanation: {
+        type: 'string',
+        description: 'One paragraph explaining what the issue is and how the patch fixes it.',
+      },
+      patchType: {
+        type: 'string',
+        enum: ['js', 'css'],
+        description: 'Whether the fix is a JavaScript patch or a CSS patch.',
+      },
+      patchCode: {
+        type: 'string',
+        description:
+          'The complete, self-contained patch code. ' +
+          'JS patches are executed via a <script> tag in the page main world. ' +
+          'CSS patches are injected as a <style> tag. ' +
+          'JS patches MUST process existing DOM elements synchronously (querySelectorAll loop) ' +
+          'and may additionally install a MutationObserver for future elements.',
+      },
+      urlPattern: {
+        type: 'string',
+        description:
+          'A regex pattern matching Outlook URLs where this patch should apply.',
+      },
+    },
+    required: ['explanation', 'patchType', 'patchCode', 'urlPattern'],
+  },
+};
+
+const PREVIEW_FIX_SYSTEM_PROMPT = [
+  'You are a self-healing engine for a Safari Web Extension called "semai" (also known as "remou").',
+  'The extension transforms Outlook Web email threads into a chat-like interface.',
+  '',
+  'When users report rendering issues, you produce a minimal CSS or JS patch to fix them.',
+  '',
+  '## How patches work',
+  '- JS patches: injected as a <script> tag in the page main world. They have full DOM/window access.',
+  '- CSS patches: injected as a <style> tag.',
+  '- Patches must be self-contained (no imports, no external dependencies).',
+  '- JS patches MUST process all matching elements synchronously with querySelectorAll on first execution.',
+  '  MutationObserver may be added for future elements, but the initial pass is mandatory.',
+  '',
+  '## Outlook URL patterns',
+  'Outlook Web runs on these domains: outlook.office.com, outlook.office365.com, outlook.cloud.microsoft',
+  'Use this urlPattern to match all: ^https://outlook\\\\.(office(365)?\\\\.com|cloud\\\\.microsoft)/',
+  '',
+  '## Guidelines',
+  '- Prefer CSS patches when the fix is purely visual.',
+  '- Use JS patches only when DOM manipulation is required.',
+  '- Keep patches minimal — fix only the reported issue.',
+].join('\n');
+
+function nativeLog(text) {
+  try {
+    browser.runtime.sendNativeMessage("yam.team.remou", { log: text });
+  } catch { /* ignore */ }
+}
+
+browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (!message || message.type !== 'PREVIEW_FIX') return;
+
+  const { reason, cleanHtml, rawHtml, senderInfo, subject, pageUrl, anthropicApiKey } =
+    message.payload || {};
+
+  if (!anthropicApiKey) {
+    sendResponse({ ok: false, error: 'Anthropic API key not configured in secrets.js' });
+    return;
+  }
+
+  nativeLog('[semai-preview] background.js received PREVIEW_FIX');
+
+  const userMessage = [
+    '## Bug report',
+    'The user reported an issue while viewing: ' + (pageUrl || ''),
+    'Subject: ' + (subject || '(no subject)'),
+    'Sender: ' + (senderInfo?.name || 'Unknown') + ' <' + (senderInfo?.email || 'unknown') + '>',
+    '',
+    '## User description',
+    reason || '(no description)',
+    '',
+    '## Clean HTML (processed by extension)',
+    '```html',
+    (cleanHtml || '').slice(0, 8000),
+    '```',
+    '',
+    '## Original HTML (raw from Outlook DOM)',
+    '```html',
+    (rawHtml || '').slice(0, 8000),
+    '```',
+  ].join('\n');
+
+  const body = JSON.stringify({
+    model: 'claude-sonnet-4-6',
+    max_tokens: 4096,
+    system: PREVIEW_FIX_SYSTEM_PROMPT,
+    tools: [APPLY_FIX_TOOL],
+    tool_choice: { type: 'tool', name: 'apply_fix' },
+    messages: [{ role: 'user', content: userMessage }],
+  });
+
+  nativeLog('[semai-preview] Calling Anthropic API (' + body.length + ' chars)...');
+
+  fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'x-api-key': anthropicApiKey,
+      'anthropic-version': '2023-06-01',
+      'content-type': 'application/json',
+    },
+    body,
+  })
+    .then((res) => {
+      nativeLog('[semai-preview] Response status: ' + res.status);
+      if (!res.ok) {
+        return res.text().then((t) => {
+          nativeLog('[semai-preview] Error body: ' + t.slice(0, 500));
+          const parsed = (() => { try { return JSON.parse(t); } catch { return {}; } })();
+          return Promise.reject(new Error(parsed.error?.message || 'HTTP ' + res.status + ': ' + t.slice(0, 200)));
+        });
+      }
+      return res.json();
+    })
+    .then((data) => {
+      const toolUse = data.content?.find(
+        (b) => b.type === 'tool_use' && b.name === 'apply_fix'
+      );
+      if (!toolUse) {
+        nativeLog('[semai-preview] No tool_use block. Blocks: ' + JSON.stringify((data.content || []).map(b => b.type)));
+        sendResponse({ ok: false, error: 'Claude did not return a fix suggestion.' });
+        return;
+      }
+      nativeLog('[semai-preview] Got patch: type=' + toolUse.input.patchType + ' code=' + (toolUse.input.patchCode || '').length + ' chars');
+      sendResponse({
+        ok: true,
+        explanation: toolUse.input.explanation,
+        patchType: toolUse.input.patchType,
+        patchCode: toolUse.input.patchCode,
+        urlPattern: toolUse.input.urlPattern,
+      });
+    })
+    .catch((err) => {
+      nativeLog('[semai-preview] Fetch error: ' + err.message);
+      sendResponse({ ok: false, error: err.message || 'Preview fix request failed.' });
+    });
+
+  return true; // keep message channel open for async response
+});
+
 // ── Xcode log relay ───────────────────────────────────────────────────────────
 // Receives { type: "semaiLog", text: "..." } from contentScript.js and
 // forwards to the native host so the message appears in the Xcode console.

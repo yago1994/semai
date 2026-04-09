@@ -1745,167 +1745,41 @@ async function semaiCreateGitHubIssue(message, subject, reason) {
 }
 
 // ── Live fix preview ─────────────────────────────────────────────────────────
-// Calls Claude API directly from the content script (Safari service workers
-// have limited cross-origin fetch support, but content scripts work fine
-// with host_permissions — same pattern as the GitHub API calls above).
-
-const SEMAI_APPLY_FIX_TOOL = {
-  name: "apply_fix",
-  description:
-    "Apply a CSS or JS patch to fix the reported Outlook rendering issue. " +
-    "The patch code will be injected into the page via a <script> or <style> tag.",
-  input_schema: {
-    type: "object",
-    properties: {
-      explanation: {
-        type: "string",
-        description: "One paragraph explaining what the issue is and how the patch fixes it.",
-      },
-      patchType: {
-        type: "string",
-        enum: ["js", "css"],
-        description: "Whether the fix is a JavaScript patch or a CSS patch.",
-      },
-      patchCode: {
-        type: "string",
-        description:
-          "The complete, self-contained patch code. " +
-          "JS patches are executed via a <script> tag in the page main world. " +
-          "CSS patches are injected as a <style> tag. " +
-          "JS patches MUST process existing DOM elements synchronously (querySelectorAll loop) " +
-          "and may additionally install a MutationObserver for future elements.",
-      },
-      urlPattern: {
-        type: "string",
-        description:
-          "A regex pattern matching Outlook URLs where this patch should apply. " +
-          "Example: ^https://outlook\\.(office(365)?\\.com|cloud\\.microsoft)/",
-      },
-    },
-    required: ["explanation", "patchType", "patchCode", "urlPattern"],
-  },
-};
-
-const SEMAI_PREVIEW_FIX_SYSTEM_PROMPT = [
-  "You are a self-healing engine for a Safari Web Extension called \"semai\" (also known as \"remou\").",
-  "The extension transforms Outlook Web email threads into a chat-like interface.",
-  "",
-  "When users report rendering issues, you produce a minimal CSS or JS patch to fix them.",
-  "",
-  "## How patches work",
-  "- JS patches: injected as a <script> tag in the page's main world. They have full DOM/window access.",
-  "- CSS patches: injected as a <style> tag.",
-  "- Patches must be self-contained (no imports, no external dependencies).",
-  "- JS patches MUST process all matching elements synchronously with querySelectorAll on first execution.",
-  "  MutationObserver may be added for future elements, but the initial pass is mandatory.",
-  "",
-  "## Outlook URL patterns",
-  "Outlook Web runs on these domains:",
-  "- outlook.office.com",
-  "- outlook.office365.com",
-  "- outlook.cloud.microsoft",
-  "",
-  "Use this urlPattern to match all of them: ^https://outlook\\\\.(office(365)?\\\\.com|cloud\\\\.microsoft)/",
-  "",
-  "## Guidelines",
-  "- Prefer CSS patches when the fix is purely visual (hiding, repositioning, styling).",
-  "- Use JS patches only when DOM manipulation is required (rewriting text, moving elements, etc.).",
-  "- Keep patches minimal — fix only the reported issue.",
-  "- Do not modify elements outside the scope of the bug report.",
-].join("\n");
+// Routes the Claude API call through background.js via browser.runtime.sendMessage.
+// Content scripts can't call api.anthropic.com directly (CORS blocks it since
+// the request origin is outlook.cloud.microsoft). background.js runs under the
+// extension's origin and bypasses CORS.
 
 async function semaiRequestPreviewFix(message, subject, reason) {
   const apiKey = typeof REMOU_ANTHROPIC_API_KEY !== "undefined" ? REMOU_ANTHROPIC_API_KEY : null;
   if (!apiKey) throw new Error("Anthropic API key not configured in secrets.js");
 
-  const userMessage = [
-    "## Bug report",
-    "The user reported an issue while viewing: " + window.location.href,
-    "Subject: " + (subject || "(no subject)"),
-    "Sender: " + (message.sender?.name || "Unknown") + " <" + (message.sender?.email || "unknown") + ">",
-    "",
-    "## User's description",
-    reason || "(no description)",
-    "",
-    "## Clean HTML (processed by extension)",
-    "```html",
-    (message.cleanHtml || "").slice(0, 8000),
-    "```",
-    "",
-    "## Original HTML (raw from Outlook DOM)",
-    "```html",
-    (message.rawHtml || "").slice(0, 8000),
-    "```",
-  ].join("\n");
+  semaiNativeLog("[semai-preview] Sending PREVIEW_FIX to background.js...");
 
-  const requestBody = {
-    model: "claude-sonnet-4-6",
-    max_tokens: 4096,
-    system: SEMAI_PREVIEW_FIX_SYSTEM_PROMPT,
-    tools: [SEMAI_APPLY_FIX_TOOL],
-    tool_choice: { type: "tool", name: "apply_fix" },
-    messages: [{ role: "user", content: userMessage }],
-  };
-
-  semaiNativeLog("[semai-preview] Sending request to Anthropic API...");
-  semaiNativeLog("[semai-preview] API key present: " + (apiKey ? "yes (" + apiKey.slice(0, 12) + "...)" : "no"));
-  semaiNativeLog("[semai-preview] Request body size: " + JSON.stringify(requestBody).length + " chars");
-
-  let response;
-  try {
-    response = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01",
-        "content-type": "application/json",
-      },
-      body: JSON.stringify(requestBody),
+  return new Promise((resolve, reject) => {
+    browser.runtime.sendMessage({
+      type: "PREVIEW_FIX",
+      payload: {
+        reason,
+        cleanHtml: message.cleanHtml,
+        rawHtml: message.rawHtml,
+        senderInfo: message.sender,
+        subject,
+        pageUrl: window.location.href,
+        anthropicApiKey: apiKey,
+      }
+    }).then((response) => {
+      semaiNativeLog("[semai-preview] Got response from background.js: ok=" + response?.ok);
+      if (!response?.ok) {
+        reject(new Error(response?.error || "Preview fix failed"));
+        return;
+      }
+      resolve(response);
+    }).catch((err) => {
+      semaiNativeLog("[semai-preview] sendMessage error: " + err.message);
+      reject(new Error("Extension messaging failed: " + err.message));
     });
-  } catch (fetchErr) {
-    semaiNativeLog("[semai-preview] Fetch threw: " + fetchErr.name + ": " + fetchErr.message);
-    semaiNativeLog("[semai-preview] Stack: " + (fetchErr.stack || "(none)"));
-    throw new Error("Network request failed: " + fetchErr.message + " — check Safari console for CORS or CSP errors.");
-  }
-
-  semaiNativeLog("[semai-preview] Response status: " + response.status);
-
-  if (!response.ok) {
-    let errBody = "";
-    try { errBody = await response.text(); } catch { errBody = "(could not read body)"; }
-    semaiNativeLog("[semai-preview] Error response body: " + errBody.slice(0, 500));
-    const parsed = (() => { try { return JSON.parse(errBody); } catch { return {}; } })();
-    throw new Error(parsed.error?.message || "Anthropic API error " + response.status + ": " + errBody.slice(0, 200));
-  }
-
-  const rawText = await response.text();
-  semaiNativeLog("[semai-preview] Response size: " + rawText.length + " chars");
-
-  let data;
-  try {
-    data = JSON.parse(rawText);
-  } catch (parseErr) {
-    semaiNativeLog("[semai-preview] JSON parse error: " + parseErr.message);
-    semaiNativeLog("[semai-preview] Raw response start: " + rawText.slice(0, 300));
-    throw new Error("Could not parse Anthropic response as JSON.");
-  }
-
-  const toolUse = data.content?.find(
-    (block) => block.type === "tool_use" && block.name === "apply_fix"
-  );
-  if (!toolUse) {
-    semaiNativeLog("[semai-preview] No tool_use block found. Content blocks: " + JSON.stringify((data.content || []).map(b => b.type)));
-    throw new Error("Claude did not return a fix suggestion.");
-  }
-
-  semaiNativeLog("[semai-preview] Got patch: type=" + toolUse.input.patchType + " code=" + (toolUse.input.patchCode || "").length + " chars");
-
-  return {
-    explanation: toolUse.input.explanation,
-    patchType: toolUse.input.patchType,
-    patchCode: toolUse.input.patchCode,
-    urlPattern: toolUse.input.urlPattern,
-  };
+  });
 }
 
 function semaiInjectPreviewPatch(patchType, patchCode) {
