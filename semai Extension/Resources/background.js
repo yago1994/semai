@@ -19,6 +19,17 @@ function semaiPatchDebug(...args) {
   }
 }
 
+// Pre-load sig detector source at startup so the PREVIEW_FIX handler
+// doesn't need to fetch it on every request (which crashes Safari's SW).
+let cachedSigDetectorSource = null;
+fetch(chrome.runtime.getURL('semaiSigDetector.js'))
+  .then(r => r.text())
+  .then(src => {
+    cachedSigDetectorSource = src;
+    console.log('[semai] semaiSigDetector.js loaded — ' + src.length + ' chars');
+  })
+  .catch(err => console.warn('[semai] Failed to load semaiSigDetector.js:', err.message));
+
 chrome.runtime.onInstalled.addListener(() => {
   fetchAndCachePatches();
   chrome.alarms.create(ALARM_NAME, { periodInMinutes: FETCH_INTERVAL_MINUTES });
@@ -236,10 +247,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     // Wrap in async IIFE — the onMessage callback itself must stay synchronous
     // (it returns `true` below to keep the channel open).
     (async () => {
-      // Load sig detector source so Claude can write patches against real logic.
-      const sigDetectorSource = await fetch(chrome.runtime.getURL('semaiSigDetector.js'))
-        .then(r => r.text())
-        .catch(() => null);
+      console.log('[semai-preview] IIFE started');
+      const sigDetectorSource = cachedSigDetectorSource;
+      console.log('[semai-preview] sigDetectorSource available:', !!sigDetectorSource);
 
       const userMessage = [
         '## Bug report',
@@ -289,6 +299,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       });
 
       console.log('[semai-preview] Calling Anthropic API — turns:', messages.length, 'body:', body.length, 'chars');
+      console.log('[semai-preview] First 200 chars of body:', body.slice(0, 200));
 
       const res = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
