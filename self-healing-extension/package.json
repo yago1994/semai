@@ -1,0 +1,12 @@
+{
+  "name": "self-healing-extension-tests",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "test": "node scripts/run-tests.js --format=pretty",
+    "test:json": "node scripts/run-tests.js"
+  },
+  "dependencies": {
+    "jsdom": "^24.1.3"
+  }
+}

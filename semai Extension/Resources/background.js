@@ -233,6 +233,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       return false;
     }
 
+    // Load the sig detector source so Claude can write patches that fix the actual logic.
+    const sigDetectorSource = await fetch(chrome.runtime.getURL('semaiSigDetector.js'))
+      .then(r => r.text())
+      .catch(() => null);
+
     const userMessage = [
       '## Bug report',
       'The user reported an issue while viewing: ' + (pageUrl || ''),
@@ -242,25 +247,32 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       '## User description',
       reason || '(no description)',
       '',
+      ...(sigDetectorSource ? [
+        '## Extension source: semaiSigDetector.js (signature detection and body cleaning)',
+        '```javascript',
+        sigDetectorSource,
+        '```',
+        '',
+      ] : []),
       '## Rendered chat overlay HTML (actual extension output — use these class names in your patch)',
       '```html',
-      (renderedHtml || '(not available)').slice(0, 6000),
+      (renderedHtml || '(not available)').slice(0, 4000),
       '```',
       '',
       '## Clean HTML (email body processed by extension)',
       '```html',
-      (cleanHtml || '').slice(0, 4000),
+      (cleanHtml || '').slice(0, 2000),
       '```',
       '',
       '## Original HTML (raw from Outlook DOM)',
       '```html',
-      (rawHtml || '').slice(0, 4000),
+      (rawHtml || '').slice(0, 2000),
       '```',
     ].join('\n');
 
     const body = JSON.stringify({
       model: 'claude-sonnet-4-6',
-      max_tokens: 4096,
+      max_tokens: 8000,
       system: PREVIEW_FIX_SYSTEM_PROMPT,
       tools: [APPLY_FIX_TOOL],
       tool_choice: { type: 'tool', name: 'apply_fix' },
