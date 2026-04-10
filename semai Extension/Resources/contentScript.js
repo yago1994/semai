@@ -1508,6 +1508,7 @@ function semaiStripSignature(body) {
 // ===== CHAT VIEW ============================================================
 
 let semaiChatViewActive = false;
+let semaiChatViewActivationInProgress = false;
 let semaiCurrentUser = null; // { name, email, initials }
 let semaiReportHoverRow = null;
 let semaiReportModeOverlay = null;
@@ -3370,6 +3371,8 @@ function semaiGetReadingPane() {
   if (!firstBody) return null;
 
   const priorityPane =
+    firstBody.closest('[data-app-section="MailReadCompose"]') ||
+    firstBody.closest('[data-app-section="ConversationContainer"]') ||
     firstBody.closest('[role="main"]') ||
     firstBody.closest('[role="complementary"]') ||
     firstBody.closest('[data-app-section-name]');
@@ -3396,58 +3399,63 @@ function semaiGetReadingPane() {
 }
 
 function semaiActivateChatView() {
-  if (semaiChatViewActive) return;
+  if (semaiChatViewActive || semaiChatViewActivationInProgress) return;
+  semaiChatViewActivationInProgress = true;
 
-  // Ensure we have the current user
-  if (!semaiGetCurrentUser()) {
-    alert("semai couldn't identify your account.\nSet SEMAI_USER_NAME in semaiConfig.js.");
-    return;
-  }
-
-  const messages = semaiExtractThreadMessages();
-  if (messages.length < 2) {
-    alert("semai chat view needs a thread with at least 2 messages.");
-    return;
-  }
-
-  const subject = semaiGetThreadSubject();
-  const overlay = semaiCreateChatOverlay(messages, subject);
-
-  // Contain the overlay within the reading pane
-  const readingPane = semaiGetReadingPane();
-  if (readingPane) {
-    const rpStyle = window.getComputedStyle(readingPane);
-    if (rpStyle.position === "static") readingPane.style.position = "relative";
-    readingPane.appendChild(overlay);
-    overlay._semaiReadingPane = readingPane;
-    semaiUpdateReadingPaneBottomClearance(readingPane, overlay);
-    if (window.ResizeObserver) {
-      const resizeObserver = new ResizeObserver(() => {
-        semaiUpdateReadingPaneBottomClearance(readingPane, overlay);
-      });
-      const composer = overlay.querySelector(".semai-chat-composer");
-      const header = overlay.querySelector(".semai-chat-header");
-      if (composer) resizeObserver.observe(composer);
-      if (header) resizeObserver.observe(header);
-      overlay._semaiResizeObserver = resizeObserver;
+  try {
+    // Ensure we have the current user
+    if (!semaiGetCurrentUser()) {
+      alert("semai couldn't identify your account.\nSet SEMAI_USER_NAME in semaiConfig.js.");
+      return;
     }
-  } else {
-    overlay.classList.add("semai-chat-overlay-fixed");
-    document.body.appendChild(overlay);
-  }
 
-  semaiChatViewActive = true;
-  semaiUpdateChatToggleBtn();
+    const messages = semaiExtractThreadMessages();
+    if (messages.length < 2) {
+      alert("semai chat view needs a thread with at least 2 messages.");
+      return;
+    }
 
-  // Scroll to bottom after the overlay is in the DOM and painted
-  const scrollEl = overlay.querySelector(".semai-chat-scroll");
-  requestAnimationFrame(() => {
+    const subject = semaiGetThreadSubject();
+    const overlay = semaiCreateChatOverlay(messages, subject);
+
+    semaiChatViewActive = true;
+    semaiUpdateChatToggleBtn();
+
+    // Contain the overlay within the reading pane
+    const readingPane = semaiGetReadingPane();
+    if (readingPane) {
+      const rpStyle = window.getComputedStyle(readingPane);
+      if (rpStyle.position === "static") readingPane.style.position = "relative";
+      readingPane.appendChild(overlay);
+      overlay._semaiReadingPane = readingPane;
+      semaiUpdateReadingPaneBottomClearance(readingPane, overlay);
+      if (window.ResizeObserver) {
+        const resizeObserver = new ResizeObserver(() => {
+          semaiUpdateReadingPaneBottomClearance(readingPane, overlay);
+        });
+        const composer = overlay.querySelector(".semai-chat-composer");
+        const header = overlay.querySelector(".semai-chat-header");
+        if (composer) resizeObserver.observe(composer);
+        if (header) resizeObserver.observe(header);
+        overlay._semaiResizeObserver = resizeObserver;
+      }
+    } else {
+      overlay.classList.add("semai-chat-overlay-fixed");
+      document.body.appendChild(overlay);
+    }
+
+    // Scroll to bottom after the overlay is in the DOM and painted
+    const scrollEl = overlay.querySelector(".semai-chat-scroll");
     requestAnimationFrame(() => {
-      scrollEl.scrollTop = scrollEl.scrollHeight;
+      requestAnimationFrame(() => {
+        scrollEl.scrollTop = scrollEl.scrollHeight;
+      });
     });
-  });
-
-  semaiLog("[semai] Chat view activated", { messageCount: messages.length });
+ 
+    semaiLog("[semai] Chat view activated", { messageCount: messages.length });
+  } finally {
+    semaiChatViewActivationInProgress = false;
+  }
 }
 
 function semaiDeactivateChatView() {
@@ -3497,6 +3505,7 @@ function semaiWatchForNavigation() {
     semaiUpdateChatToggleVisibility();
     if (
       !semaiChatViewActive &&
+      !semaiChatViewActivationInProgress &&
       !semaiCalibrationState &&
       bodies.length >= 2 &&
       sig &&
