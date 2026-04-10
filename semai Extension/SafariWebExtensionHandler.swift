@@ -31,7 +31,12 @@ class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
         if let dict = message as? [String: Any], let logText = dict["log"] as? String {
             os_log(.default, "[semai-sig] %{public}@", logText)
         } else {
-            os_log(.default, "Received message from browser.runtime.sendNativeMessage: %@ (profile: %@)", String(describing: message), profile?.uuidString ?? "none")
+            os_log(
+                .default,
+                "Received message from browser.runtime.sendNativeMessage: %{public}@ (profile: %{public}@)",
+                String(describing: message),
+                profile?.uuidString ?? "none"
+            )
         }
 
         let response = NSExtensionItem()
