@@ -11,6 +11,13 @@ const ALARM_NAME = 'semai_patch_fetch';
 const FETCH_INTERVAL_MINUTES = 60;
 const MAX_PATCH_BYTES = 50 * 1024; // 50 KB per patch
 const EXTENSION_VERSION = chrome.runtime.getManifest().version;
+const PATCH_DEBUG = false;
+
+function semaiPatchDebug(...args) {
+  if (PATCH_DEBUG) {
+    console.warn(...args);
+  }
+}
 
 chrome.runtime.onInstalled.addListener(() => {
   fetchAndCachePatches();
@@ -32,7 +39,7 @@ async function fetchAndCachePatches() {
       console.log(`[semai] Cached ${valid.length} patch(es).`);
     }
   } catch (err) {
-    console.warn('[semai] Patch fetch failed:', err.message);
+    semaiPatchDebug('[semai] Patch fetch failed:', err.message);
   }
 }
 
@@ -47,11 +54,11 @@ function validateManifest(manifest) {
       !['js', 'css'].includes(p.type) ||
       !['content', 'background'].includes(p.target)
     ) {
-      console.warn('[semai] Dropping malformed patch:', p.id ?? '(no id)');
+      semaiPatchDebug('[semai] Dropping malformed patch:', p.id ?? '(no id)');
       return false;
     }
     if (new Blob([p.code]).size > MAX_PATCH_BYTES) {
-      console.warn(`[semai] Dropping oversized patch: ${p.id}`);
+      semaiPatchDebug(`[semai] Dropping oversized patch: ${p.id}`);
       return false;
     }
     if (p.minExtensionVersion && !semverSatisfies(p.minExtensionVersion)) {
