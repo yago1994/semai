@@ -846,7 +846,7 @@ function semaiFoldNameForMatch(text) {
 }
 
 function semaiNameMatchRemainder(text, nameToken) {
-  const foldedText = semaiFoldNameForMatch(text);
+  const foldedText = semaiFoldNameForMatch((text || "").replace(/^[^\p{L}]+/gu, ""));
   const foldedToken = semaiFoldNameForMatch(nameToken);
   if (!foldedText.startsWith(foldedToken)) return null;
   return foldedText.slice(foldedToken.length);
