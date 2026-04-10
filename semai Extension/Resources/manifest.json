@@ -33,7 +33,7 @@
         "https://outlook.office365.com/*",
         "https://outlook.cloud.microsoft/*"
       ],
-      "js": ["secrets.js", "semaiConfig.js", "contentScript.js"],
+      "js": ["secrets.js", "semaiConfig.js", "semaiSigDetector.js", "contentScript.js"],
       "css": ["styles.css"],
       "run_at": "document_idle"
     }
