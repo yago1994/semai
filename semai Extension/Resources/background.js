@@ -233,97 +233,98 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       return false;
     }
 
-    // Load the sig detector source so Claude can write patches that fix the actual logic.
-    const sigDetectorSource = await fetch(chrome.runtime.getURL('semaiSigDetector.js'))
-      .then(r => r.text())
-      .catch(() => null);
+    // Wrap in async IIFE — the onMessage callback itself must stay synchronous
+    // (it returns `true` below to keep the channel open).
+    (async () => {
+      // Load sig detector source so Claude can write patches against real logic.
+      const sigDetectorSource = await fetch(chrome.runtime.getURL('semaiSigDetector.js'))
+        .then(r => r.text())
+        .catch(() => null);
 
-    const userMessage = [
-      '## Bug report',
-      'The user reported an issue while viewing: ' + (pageUrl || ''),
-      'Subject: ' + (subject || '(no subject)'),
-      'Sender: ' + (senderInfo?.name || 'Unknown') + ' <' + (senderInfo?.email || 'unknown') + '>',
-      '',
-      '## User description',
-      reason || '(no description)',
-      '',
-      ...(sigDetectorSource ? [
-        '## Extension source: semaiSigDetector.js (signature detection and body cleaning)',
-        '```javascript',
-        sigDetectorSource,
+      const userMessage = [
+        '## Bug report',
+        'The user reported an issue while viewing: ' + (pageUrl || ''),
+        'Subject: ' + (subject || '(no subject)'),
+        'Sender: ' + (senderInfo?.name || 'Unknown') + ' <' + (senderInfo?.email || 'unknown') + '>',
+        '',
+        '## User description',
+        reason || '(no description)',
+        '',
+        ...(sigDetectorSource ? [
+          '## Extension source: semaiSigDetector.js (signature detection and body cleaning)',
+          '```javascript',
+          sigDetectorSource,
+          '```',
+          '',
+        ] : []),
+        '## Rendered chat overlay HTML (actual extension output — use these class names in your patch)',
+        '```html',
+        (renderedHtml || '(not available)').slice(0, 4000),
         '```',
         '',
-      ] : []),
-      '## Rendered chat overlay HTML (actual extension output — use these class names in your patch)',
-      '```html',
-      (renderedHtml || '(not available)').slice(0, 4000),
-      '```',
-      '',
-      '## Clean HTML (email body processed by extension)',
-      '```html',
-      (cleanHtml || '').slice(0, 2000),
-      '```',
-      '',
-      '## Original HTML (raw from Outlook DOM)',
-      '```html',
-      (rawHtml || '').slice(0, 2000),
-      '```',
-    ].join('\n');
+        '## Clean HTML (email body processed by extension)',
+        '```html',
+        (cleanHtml || '').slice(0, 2000),
+        '```',
+        '',
+        '## Original HTML (raw from Outlook DOM)',
+        '```html',
+        (rawHtml || '').slice(0, 2000),
+        '```',
+      ].join('\n');
 
-    const body = JSON.stringify({
-      model: 'claude-sonnet-4-6',
-      max_tokens: 8000,
-      system: PREVIEW_FIX_SYSTEM_PROMPT,
-      tools: [APPLY_FIX_TOOL],
-      tool_choice: { type: 'tool', name: 'apply_fix' },
-      messages: [{ role: 'user', content: userMessage }],
-    });
-
-    console.log('[semai-preview] Calling Anthropic API (' + body.length + ' chars)...');
-
-    fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'x-api-key': anthropicApiKey,
-        'anthropic-version': '2023-06-01',
-        'anthropic-dangerous-direct-browser-access': 'true',
-        'content-type': 'application/json',
-      },
-      body,
-    })
-      .then((res) => {
-        console.log('[semai-preview] Response status: ' + res.status);
-        if (!res.ok) {
-          return res.text().then((t) => {
-            console.error('[semai-preview] Error body: ' + t.slice(0, 500));
-            const parsed = (() => { try { return JSON.parse(t); } catch { return {}; } })();
-            return Promise.reject(new Error(parsed.error?.message || 'HTTP ' + res.status));
-          });
-        }
-        return res.json();
-      })
-      .then((data) => {
-        const toolUse = data.content?.find(
-          (b) => b.type === 'tool_use' && b.name === 'apply_fix'
-        );
-        if (!toolUse) {
-          console.warn('[semai-preview] No tool_use block in response');
-          sendResponse({ ok: false, error: 'Claude did not return a fix suggestion.' });
-          return;
-        }
-        console.log('[semai-preview] Got patch: ' + toolUse.input.patchType);
-        sendResponse({
-          ok: true,
-          explanation: toolUse.input.explanation,
-          patchType: toolUse.input.patchType,
-          patchCode: toolUse.input.patchCode,
-          urlPattern: toolUse.input.urlPattern,
-        });
-      })
-      .catch((err) => {
-        console.error('[semai-preview] Fetch error: ' + err.message);
-        sendResponse({ ok: false, error: err.message || 'Preview fix request failed.' });
+      const body = JSON.stringify({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 8000,
+        system: PREVIEW_FIX_SYSTEM_PROMPT,
+        tools: [APPLY_FIX_TOOL],
+        tool_choice: { type: 'tool', name: 'apply_fix' },
+        messages: [{ role: 'user', content: userMessage }],
       });
+
+      console.log('[semai-preview] Calling Anthropic API (' + body.length + ' chars)...');
+
+      const res = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'x-api-key': anthropicApiKey,
+          'anthropic-version': '2023-06-01',
+          'anthropic-dangerous-direct-browser-access': 'true',
+          'content-type': 'application/json',
+        },
+        body,
+      });
+
+      console.log('[semai-preview] Response status: ' + res.status);
+
+      if (!res.ok) {
+        const t = await res.text();
+        console.error('[semai-preview] Error body: ' + t.slice(0, 500));
+        const parsed = (() => { try { return JSON.parse(t); } catch { return {}; } })();
+        sendResponse({ ok: false, error: parsed.error?.message || 'HTTP ' + res.status });
+        return;
+      }
+
+      const data = await res.json();
+      const toolUse = data.content?.find(b => b.type === 'tool_use' && b.name === 'apply_fix');
+      if (!toolUse) {
+        console.warn('[semai-preview] No tool_use block in response');
+        sendResponse({ ok: false, error: 'Claude did not return a fix suggestion.' });
+        return;
+      }
+
+      console.log('[semai-preview] Got patch: ' + toolUse.input.patchType);
+      sendResponse({
+        ok: true,
+        explanation: toolUse.input.explanation,
+        patchType: toolUse.input.patchType,
+        patchCode: toolUse.input.patchCode,
+        urlPattern: toolUse.input.urlPattern,
+      });
+    })().catch((err) => {
+      console.error('[semai-preview] Error: ' + err.message);
+      sendResponse({ ok: false, error: err.message || 'Preview fix request failed.' });
+    });
 
     return true; // keep channel open for async response
   }
