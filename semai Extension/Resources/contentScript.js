@@ -1056,13 +1056,16 @@ async function semaiCreateGitHubIssue(message, subject, reason) {
 // the request origin is outlook.cloud.microsoft). background.js runs under the
 // extension's origin and bypasses CORS.
 
-async function semaiRequestPreviewFix(message, subject, reason) {
+async function semaiRequestPreviewFix(message, subject, reason, conversationHistory = null) {
   const apiKey = typeof REMOU_ANTHROPIC_API_KEY !== "undefined" ? REMOU_ANTHROPIC_API_KEY : null;
   if (!apiKey) throw new Error("Anthropic API key not configured in secrets.js");
 
   console.log("[semai-preview] Starting preview fix request...");
   console.log("[semai-preview] API key present:", !!apiKey);
   console.log("[semai-preview] chrome.runtime available:", typeof chrome !== "undefined" && !!chrome.runtime);
+  if (conversationHistory?.length) {
+    console.log("[semai-preview] Retrying with conversation history — turns:", conversationHistory.length);
+  }
 
   return new Promise((resolve, reject) => {
     try {
@@ -1079,6 +1082,7 @@ async function semaiRequestPreviewFix(message, subject, reason) {
           subject,
           pageUrl: window.location.href,
           anthropicApiKey: apiKey,
+          conversationHistory,
         }
       }, (response) => {
         if (chrome.runtime.lastError) {
@@ -1086,7 +1090,7 @@ async function semaiRequestPreviewFix(message, subject, reason) {
           reject(new Error(chrome.runtime.lastError.message));
           return;
         }
-        console.log("[semai-preview] Got response:", JSON.stringify(response).slice(0, 200));
+        console.log("[semai-preview] Full response:", JSON.stringify(response));
         if (!response?.ok) {
           reject(new Error(response?.error || "Preview fix failed"));
           return;
@@ -1257,8 +1261,8 @@ function semaiOpenReportPopover(overlay, message, subject, clientX, clientY) {
     <div class="semai-report-popover-preview-result" style="display:none;">
       <div class="semai-report-popover-explanation"></div>
       <div class="semai-report-popover-preview-actions">
-        <button type="button" class="semai-report-popover-reject">Reject</button>
-        <button type="button" class="semai-report-popover-approve">Approve &amp; Report</button>
+        <button type="button" class="semai-report-popover-reject" title="Reject — ask Claude for a different fix">✕</button>
+        <button type="button" class="semai-report-popover-approve" title="Approve — report to GitHub with this fix">✓</button>
       </div>
     </div>
   `;
@@ -1273,6 +1277,7 @@ function semaiOpenReportPopover(overlay, message, subject, clientX, clientY) {
   const input = popover.querySelector(".semai-report-popover-input");
 
   let currentPatch = null;
+  let conversationHistory = []; // multi-turn retry history
 
   function setAllDisabled(disabled) {
     cancelBtn.disabled = disabled;
@@ -1302,20 +1307,21 @@ function semaiOpenReportPopover(overlay, message, subject, clientX, clientY) {
       return;
     }
 
+    conversationHistory = []; // fresh request resets history
     setAllDisabled(true);
     previewResult.style.display = "none";
     semaiRemovePreviewPatch();
     semaiSetReportModeStatus(overlay, "Asking Claude for a fix…", "report");
 
     try {
-      const patch = await semaiRequestPreviewFix(message, subject, reason);
-      semaiNativeLog(`[semai-preview] Patch received patchType=${patch.patchType} codeLength=${(patch.patchCode||'').length} ok=${patch.ok}`);
+      const patch = await semaiRequestPreviewFix(message, subject, reason, conversationHistory);
+      semaiNativeLog(`[semai-preview] Patch received patchType=${patch.patchType} codeLength=${(patch.patchCode||'').length}`);
       currentPatch = patch;
       semaiInjectPreviewPatch(patch.patchType, patch.patchCode);
       explanationEl.textContent = patch.explanation;
       previewResult.style.display = "block";
       setAllDisabled(false);
-      semaiSetReportModeStatus(overlay, "Fix previewed — check the result, then approve or reject.", "success");
+      semaiSetReportModeStatus(overlay, "Fix applied — ✓ approve or ✕ reject for a different fix.", "success");
     } catch (error) {
       setAllDisabled(false);
       semaiNativeLog(`[semai-preview] Preview fix failed: ${error.message}`);
@@ -1323,12 +1329,47 @@ function semaiOpenReportPopover(overlay, message, subject, clientX, clientY) {
     }
   });
 
-  // ── Reject: remove the preview patch, let user try again ──
-  rejectBtn.addEventListener("click", () => {
+  // ── Reject: add to conversation history and ask Claude for a different fix ──
+  rejectBtn.addEventListener("click", async () => {
+    if (!currentPatch) return;
+    const rejectedPatch = currentPatch;
+
+    // Build the next conversation turn
+    conversationHistory.push({
+      role: "assistant",
+      content: [{ type: "tool_use", id: rejectedPatch.toolUseId, name: "apply_fix", input: {
+        explanation: rejectedPatch.explanation,
+        patchType: rejectedPatch.patchType,
+        patchCode: rejectedPatch.patchCode,
+        urlPattern: rejectedPatch.urlPattern,
+      }}],
+    });
+    conversationHistory.push({
+      role: "user",
+      content: [{ type: "tool_result", tool_use_id: rejectedPatch.toolUseId,
+        content: "The patch was rejected. The visual result did not look correct. Please suggest a different approach — try a different strategy or fix a different root cause." }],
+    });
+
     semaiRemovePreviewPatch();
     currentPatch = null;
     previewResult.style.display = "none";
-    semaiSetReportModeStatus(overlay, "Fix rejected. Edit your description and try again, or report as-is.", "report");
+    setAllDisabled(true);
+    semaiSetReportModeStatus(overlay, "Asking Claude for a different fix…", "report");
+
+    try {
+      const patch = await semaiRequestPreviewFix(message, subject, input.value.trim(), conversationHistory);
+      semaiNativeLog(`[semai-preview] Retry patch received patchType=${patch.patchType}`);
+      currentPatch = patch;
+      semaiInjectPreviewPatch(patch.patchType, patch.patchCode);
+      explanationEl.textContent = patch.explanation;
+      previewResult.style.display = "block";
+      setAllDisabled(false);
+      semaiSetReportModeStatus(overlay, "New fix applied — ✓ approve or ✕ reject for another.", "success");
+    } catch (error) {
+      setAllDisabled(false);
+      semaiNativeLog(`[semai-preview] Retry failed: ${error.message}`);
+      semaiSetReportModeStatus(overlay, error.message || "Retry failed.", "error");
+    }
   });
 
   // ── Approve & Report: create issue with the working patch embedded ──

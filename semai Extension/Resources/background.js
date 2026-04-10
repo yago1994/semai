@@ -223,7 +223,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   // ── Live fix preview ──
   if (msg.type === 'PREVIEW_FIX') {
-    const { reason, cleanHtml, rawHtml, renderedHtml, senderInfo, subject, pageUrl, anthropicApiKey } =
+    const { reason, cleanHtml, rawHtml, renderedHtml, senderInfo, subject, pageUrl, anthropicApiKey, conversationHistory } =
       msg.payload || {};
 
     console.log('[semai-preview] Received PREVIEW_FIX message');
@@ -273,16 +273,22 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         '```',
       ].join('\n');
 
+      // Build the messages array: initial user prompt + any retry history
+      const messages = [
+        { role: 'user', content: userMessage },
+        ...(Array.isArray(conversationHistory) ? conversationHistory : []),
+      ];
+
       const body = JSON.stringify({
         model: 'claude-sonnet-4-6',
         max_tokens: 8000,
         system: PREVIEW_FIX_SYSTEM_PROMPT,
         tools: [APPLY_FIX_TOOL],
         tool_choice: { type: 'tool', name: 'apply_fix' },
-        messages: [{ role: 'user', content: userMessage }],
+        messages,
       });
 
-      console.log('[semai-preview] Calling Anthropic API (' + body.length + ' chars)...');
+      console.log('[semai-preview] Calling Anthropic API — turns:', messages.length, 'body:', body.length, 'chars');
 
       const res = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
@@ -295,17 +301,19 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         body,
       });
 
-      console.log('[semai-preview] Response status: ' + res.status);
+      console.log('[semai-preview] Response status:', res.status);
 
       if (!res.ok) {
         const t = await res.text();
-        console.error('[semai-preview] Error body: ' + t.slice(0, 500));
+        console.error('[semai-preview] Error body:', t.slice(0, 500));
         const parsed = (() => { try { return JSON.parse(t); } catch { return {}; } })();
         sendResponse({ ok: false, error: parsed.error?.message || 'HTTP ' + res.status });
         return;
       }
 
       const data = await res.json();
+      console.log('[semai-preview] Full API response:', JSON.stringify(data));
+
       const toolUse = data.content?.find(b => b.type === 'tool_use' && b.name === 'apply_fix');
       if (!toolUse) {
         console.warn('[semai-preview] No tool_use block in response');
@@ -313,9 +321,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         return;
       }
 
-      console.log('[semai-preview] Got patch: ' + toolUse.input.patchType);
+      console.log('[semai-preview] Got patch:', toolUse.input.patchType, '— toolUseId:', toolUse.id);
       sendResponse({
         ok: true,
+        toolUseId: toolUse.id,
         explanation: toolUse.input.explanation,
         patchType: toolUse.input.patchType,
         patchCode: toolUse.input.patchCode,

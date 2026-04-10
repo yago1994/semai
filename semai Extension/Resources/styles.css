@@ -648,36 +648,54 @@ body.semai-calibrating * {
 .semai-report-popover-preview-actions {
   display: flex;
   justify-content: flex-end;
-  gap: 8px;
+  gap: 10px;
   flex-shrink: 0;
+  padding-top: 4px;
 }
 
 .semai-report-popover-reject,
 .semai-report-popover-approve {
-  border-radius: 999px;
-  padding: 8px 12px;
-  font-size: 12px;
-  font-weight: 600;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1;
   cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.1s, box-shadow 0.1s;
 }
 
 .semai-report-popover-reject {
-  border: 1px solid rgba(148, 163, 184, 0.35);
-  background: #ffffff;
-  color: #334155;
+  border: 1.5px solid rgba(220, 38, 38, 0.4);
+  background: #fff;
+  color: #dc2626;
+}
+
+.semai-report-popover-reject:hover:not(:disabled) {
+  background: #fef2f2;
+  transform: scale(1.08);
 }
 
 .semai-report-popover-approve {
   border: none;
   background: #16a34a;
   color: #ffffff;
-  box-shadow: 0 8px 18px rgba(22, 163, 74, 0.22);
+  box-shadow: 0 4px 12px rgba(22, 163, 74, 0.35);
+}
+
+.semai-report-popover-approve:hover:not(:disabled) {
+  background: #15803d;
+  transform: scale(1.08);
 }
 
 .semai-report-popover-reject:disabled,
 .semai-report-popover-approve:disabled {
-  opacity: 0.6;
+  opacity: 0.4;
   cursor: default;
+  transform: none;
   box-shadow: none;
 }
 
