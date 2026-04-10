@@ -260,27 +260,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         '## User description',
         reason || '(no description)',
         '',
-        ...(sigDetectorSource ? [
-          '## Extension source: semaiSigDetector.js (signature detection and body cleaning)',
-          '```javascript',
-          sigDetectorSource,
-          '```',
-          '',
-        ] : []),
-        '## Rendered chat overlay HTML (actual extension output — use these class names in your patch)',
-        '```html',
-        (renderedHtml || '(not available)').slice(0, 4000),
-        '```',
-        '',
-        '## Clean HTML (email body processed by extension)',
-        '```html',
-        (cleanHtml || '').slice(0, 2000),
-        '```',
-        '',
-        '## Original HTML (raw from Outlook DOM)',
-        '```html',
-        (rawHtml || '').slice(0, 2000),
-        '```',
+        // TODO: re-enable once end-to-end flow is verified
+        // ...(sigDetectorSource ? ['## Extension source: semaiSigDetector.js', '```javascript', sigDetectorSource, '```', ''] : []),
       ].join('\n');
 
       // Build the messages array: initial user prompt + any retry history
