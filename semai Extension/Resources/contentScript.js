@@ -5,6 +5,10 @@ function semaiIsVisibleElement(el) {
   return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none";
 }
 
+function semaiIsInsideRemouUi(el) {
+  return el instanceof Element && !!el.closest("#semai-chat-overlay, #semai-panel, .semai-report-popover");
+}
+
 function semaiLooksLikeComposeElement(el) {
   if (!(el instanceof HTMLElement)) return false;
   if (!semaiIsVisibleElement(el)) return false;
@@ -131,10 +135,12 @@ function semaiFindReplyAllButton() {
   ].join(", ");
 
   const matches = Array.from(document.querySelectorAll(selector)).filter(semaiIsVisibleElement);
-  if (matches.length > 0) return matches[matches.length - 1];
+  const outlookMatches = matches.filter((el) => !semaiIsInsideRemouUi(el));
+  if (outlookMatches.length > 0) return outlookMatches[outlookMatches.length - 1];
 
   const textMatches = Array.from(document.querySelectorAll('button, [role="button"]'))
     .filter(semaiIsVisibleElement)
+    .filter((el) => !semaiIsInsideRemouUi(el))
     .filter((el) => /reply all/i.test(el.getAttribute("aria-label") || el.textContent || ""));
 
   return textMatches[textMatches.length - 1] || null;
