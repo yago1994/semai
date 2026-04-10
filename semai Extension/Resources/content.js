@@ -4,6 +4,13 @@
 
 (function () {
   const INJECTED_KEY = '__semai_injected_patches__';
+  const PATCH_DEBUG = false;
+
+  function semaiPatchDebug(...args) {
+    if (PATCH_DEBUG) {
+      console.warn(...args);
+    }
+  }
 
   function getInjected() {
     return window[INJECTED_KEY] || (window[INJECTED_KEY] = new Set());
@@ -28,7 +35,7 @@
 
   chrome.runtime.sendMessage({ type: 'GET_PATCHES' }, (response) => {
     if (chrome.runtime.lastError) {
-      console.warn('[semai] Patch request failed:', chrome.runtime.lastError.message);
+      semaiPatchDebug('[semai] Patch request failed:', chrome.runtime.lastError.message);
       return;
     }
     const patches = response?.patches ?? [];
