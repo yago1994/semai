@@ -19,4 +19,57 @@ function openPreferences() {
     webkit.messageHandlers.controller.postMessage("open-preferences");
 }
 
+const reportIssueInput = document.getElementById("report-issue-input");
+const reportIssueButton = document.querySelector("button.report-issue-btn");
+const reportIssueStatus = document.getElementById("report-issue-status");
+
+function setReportIssueStatus(message, tone = "neutral") {
+    reportIssueStatus.textContent = message || "";
+    reportIssueStatus.classList.remove("is-success", "is-error");
+
+    if (tone === "success") {
+        reportIssueStatus.classList.add("is-success");
+    } else if (tone === "error") {
+        reportIssueStatus.classList.add("is-error");
+    }
+}
+
+function setReportIssueBusy(isBusy) {
+    reportIssueButton.disabled = isBusy;
+    reportIssueInput.disabled = isBusy;
+    reportIssueButton.textContent = isBusy ? "Reporting…" : "Report an issue";
+}
+
+function submitReportIssue() {
+    const reason = reportIssueInput.value.trim();
+    if (!reason) {
+        setReportIssueStatus("Add a short description before sending the report.", "error");
+        reportIssueInput.focus();
+        return;
+    }
+
+    setReportIssueBusy(true);
+    setReportIssueStatus("Creating GitHub issue…");
+    webkit.messageHandlers.controller.postMessage({
+        command: "report-issue",
+        reason,
+        extensionEnabled: document.body.classList.contains("state-on"),
+        pageUrl: window.location.href,
+        userAgent: window.navigator.userAgent
+    });
+}
+
+function reportIssueResult(success, message) {
+    setReportIssueBusy(false);
+    setReportIssueStatus(
+        message || (success ? "Issue reported successfully." : "Failed to report issue."),
+        success ? "success" : "error"
+    );
+
+    if (success) {
+        reportIssueInput.value = "";
+    }
+}
+
 document.querySelector("button.open-preferences").addEventListener("click", openPreferences);
+reportIssueButton.addEventListener("click", submitReportIssue);
