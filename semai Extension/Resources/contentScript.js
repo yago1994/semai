@@ -773,7 +773,7 @@ function createPanel() {
   semaiUpdateCalibrationStatus(
     calibration?.senderSelector
       ? "Sender detection is trained for this Outlook layout."
-      : "Quick setup: click your name in a thread, then click another sender.",
+      : "Step 1: Click on your sender label, then Step 2: Click on another sender (who is not you).",
     calibration?.senderSelector ? "success" : "neutral"
   );
   semaiLog("[semai] Panel created");
@@ -1056,53 +1056,153 @@ async function semaiCreateGitHubIssue(message, subject, reason) {
 // the request origin is outlook.cloud.microsoft). background.js runs under the
 // extension's origin and bypasses CORS.
 
+// ── Claude API constants (content-script side — avoids service worker lifecycle issues) ──
+
+const SEMAI_APPLY_FIX_TOOL = {
+  name: 'apply_fix',
+  description: 'Apply a CSS or JS patch to fix the reported Outlook rendering issue.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      explanation: {
+        type: 'string',
+        description: 'One paragraph explaining what the issue is and how the patch fixes it.',
+      },
+      patchType: {
+        type: 'string',
+        enum: ['js', 'css'],
+        description: 'Whether the fix is a JavaScript patch or a CSS patch.',
+      },
+      patchCode: {
+        type: 'string',
+        description:
+          'The complete, self-contained patch code. ' +
+          'JS patches are executed via a <script> tag in the page main world. ' +
+          'CSS patches are injected as a <style> tag. ' +
+          'JS patches MUST process existing DOM elements synchronously (querySelectorAll loop) ' +
+          'and may additionally install a MutationObserver for future elements.',
+      },
+      urlPattern: {
+        type: 'string',
+        description: 'A regex pattern matching Outlook URLs where this patch should apply.',
+      },
+    },
+    required: ['explanation', 'patchType', 'patchCode', 'urlPattern'],
+  },
+};
+
+const SEMAI_PREVIEW_FIX_SYSTEM_PROMPT = [
+  'You are a self-healing engine for a Safari Web Extension called "semai" (also known as "remou").',
+  'The extension transforms Outlook Web email threads into a chat-like interface.',
+  '',
+  'When users report rendering issues, you produce a minimal CSS or JS patch to fix them.',
+  '',
+  '## How patches work',
+  '- JS patches: injected into the page main world via chrome.scripting.executeScript. They have full DOM/window access.',
+  '- CSS patches: injected via chrome.scripting.insertCSS.',
+  '- Patches must be self-contained (no imports, no external dependencies).',
+  '- JS patches MUST process all matching elements synchronously with querySelectorAll on first execution.',
+  '  MutationObserver may be added for future elements, but the initial pass is mandatory.',
+  '',
+  '## Extension DOM structure',
+  'The extension renders a chat overlay with these key elements:',
+  '- #semai-chat-overlay — the main overlay container',
+  '- .semai-chat-row — one row per email message (has data-report-index attribute)',
+  '- .semai-chat-row.semai-chat-me — rows sent by the current user',
+  '- .semai-chat-row.semai-chat-them — rows sent by others',
+  '- .semai-chat-avatar — the avatar circle showing sender initials (e.g. "GS" for "Gaelle Sabben")',
+  '- .semai-chat-bubble — the message bubble containing the email body',
+  '- .semai-chat-sender — sender name label shown above the bubble (on .semai-chat-them rows)',
+  '',
+  '## Outlook URL patterns',
+  'Outlook Web runs on these domains: outlook.office.com, outlook.office365.com, outlook.cloud.microsoft',
+  'Use this urlPattern to match all: ^https://outlook\\\\.(office(365)?\\\\.com|cloud\\\\.microsoft)/',
+  '',
+  '## Guidelines',
+  '- Prefer CSS patches when the fix is purely visual.',
+  '- Use JS patches only when DOM manipulation is required.',
+  '- Keep patches minimal — fix only the reported issue.',
+  '- When the rendered HTML is provided, base your selectors on the ACTUAL class names visible in it.',
+].join('\n');
+
+// Pre-fetch sig detector source once (content script stays alive with the page).
+let _semaiSigDetectorSource = null;
+fetch(chrome.runtime.getURL('semaiSigDetector.js'))
+  .then(r => r.text())
+  .then(src => { _semaiSigDetectorSource = src; })
+  .catch(() => {});
+
 async function semaiRequestPreviewFix(message, subject, reason, conversationHistory = null) {
   const apiKey = typeof REMOU_ANTHROPIC_API_KEY !== "undefined" ? REMOU_ANTHROPIC_API_KEY : null;
   if (!apiKey) throw new Error("Anthropic API key not configured in secrets.js");
 
-  console.log("[semai-preview] Starting preview fix request...");
-  console.log("[semai-preview] API key present:", !!apiKey);
-  console.log("[semai-preview] chrome.runtime available:", typeof chrome !== "undefined" && !!chrome.runtime);
   if (conversationHistory?.length) {
-    console.log("[semai-preview] Retrying with conversation history — turns:", conversationHistory.length);
+    console.log("[semai-preview] Retrying — turns:", conversationHistory.length);
   }
 
-  return new Promise((resolve, reject) => {
-    try {
-      const overlay = document.getElementById("semai-chat-overlay");
-      const renderedHtml = overlay ? overlay.innerHTML : "";
-      chrome.runtime.sendMessage({
-        type: "PREVIEW_FIX",
-        payload: {
-          reason,
-          cleanHtml: (message.cleanHtml || "").slice(0, 8000),
-          rawHtml: (message.rawHtml || "").slice(0, 8000),
-          renderedHtml,
-          senderInfo: message.sender,
-          subject,
-          pageUrl: window.location.href,
-          anthropicApiKey: apiKey,
-          conversationHistory,
-        }
-      }, (response) => {
-        if (chrome.runtime.lastError) {
-          console.error("[semai-preview] chrome.runtime.lastError:", chrome.runtime.lastError.message);
-          reject(new Error(chrome.runtime.lastError.message));
-          return;
-        }
-        console.log("[semai-preview] Full response:", JSON.stringify(response));
-        if (!response?.ok) {
-          reject(new Error(response?.error || "Preview fix failed"));
-          return;
-        }
-        resolve(response);
-      });
-      console.log("[semai-preview] sendMessage called successfully");
-    } catch (err) {
-      console.error("[semai-preview] sendMessage threw synchronously:", err.message);
-      reject(new Error("sendMessage failed: " + err.message));
-    }
+  const cleanHtml = (message.cleanHtml || "").slice(0, 6000);
+  const sigDetectorSource = _semaiSigDetectorSource;
+
+  const userMessage = [
+    '## Bug report',
+    'The user reported an issue while viewing: ' + window.location.href,
+    'Subject: ' + (subject || '(no subject)'),
+    'Sender: ' + (message.sender?.name || 'Unknown') + ' <' + (message.sender?.email || 'unknown') + '>',
+    '',
+    '## User description',
+    reason || '(no description)',
+    '',
+    ...(cleanHtml ? ['## Email HTML (clean, sig stripped)', '```html', cleanHtml, '```', ''] : []),
+    ...(sigDetectorSource ? ['## Extension source: semaiSigDetector.js', '```javascript', sigDetectorSource, '```', ''] : []),
+  ].join('\n');
+
+  const messages = [
+    { role: 'user', content: userMessage },
+    ...(Array.isArray(conversationHistory) ? conversationHistory : []),
+  ];
+
+  const body = JSON.stringify({
+    model: 'claude-sonnet-4-6',
+    max_tokens: 8000,
+    system: SEMAI_PREVIEW_FIX_SYSTEM_PROMPT,
+    tools: [SEMAI_APPLY_FIX_TOOL],
+    tool_choice: { type: 'tool', name: 'apply_fix' },
+    messages,
   });
+
+  console.log('[semai-preview] Calling Anthropic API — turns:', messages.length, 'body:', body.length, 'chars');
+
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true',
+      'content-type': 'application/json',
+    },
+    body,
+  });
+
+  if (!res.ok) {
+    const t = await res.text();
+    const parsed = (() => { try { return JSON.parse(t); } catch { return {}; } })();
+    throw new Error(parsed.error?.message || 'HTTP ' + res.status);
+  }
+
+  const data = await res.json();
+  console.log('[semai-preview] Response stop_reason:', data.stop_reason, 'input_tokens:', data.usage?.input_tokens);
+
+  const toolUse = data.content?.find(b => b.type === 'tool_use' && b.name === 'apply_fix');
+  if (!toolUse) throw new Error('Claude did not return a fix suggestion.');
+
+  return {
+    ok: true,
+    toolUseId: toolUse.id,
+    explanation: toolUse.input.explanation,
+    patchType: toolUse.input.patchType,
+    patchCode: toolUse.input.patchCode,
+    urlPattern: toolUse.input.urlPattern,
+  };
 }
 
 // Tracks the last injected CSS so it can be removed on reject.
@@ -1134,6 +1234,39 @@ function semaiRemovePreviewPatch() {
     chrome.runtime.sendMessage({ type: 'REMOVE_CSS_PATCH', payload: { css } });
   }
   // JS patches can't be removed without a page reload — acceptable for preview
+  semaiRemoveTestBanner();
+}
+
+let _semaiTestBannerRow = null;
+
+function semaiInjectTestBanner(row) {
+  semaiRemoveTestBanner();
+  if (!row) return;
+  _semaiTestBannerRow = row;
+  const banner = document.createElement('div');
+  banner.setAttribute('data-semai-test-banner', '1');
+  banner.style.cssText = [
+    'display:block',
+    'margin:6px 12px',
+    'padding:8px 12px',
+    'background:#007aff',
+    'color:#fff',
+    'border-radius:8px',
+    'font-size:13px',
+    'font-weight:600',
+    'font-family:system-ui,sans-serif',
+    'z-index:9999',
+  ].join(';');
+  banner.textContent = 'Hello — Claude injected this ✓';
+  row.prepend(banner);
+}
+
+function semaiRemoveTestBanner() {
+  if (_semaiTestBannerRow) {
+    const existing = _semaiTestBannerRow.querySelector('[data-semai-test-banner]');
+    if (existing) existing.remove();
+    _semaiTestBannerRow = null;
+  }
 }
 
 function semaiBuildApprovedFixIssueBody(message, subject, reason, patch) {
@@ -1217,19 +1350,6 @@ function semaiSetReportModeStatus(overlay, message, tone = "neutral") {
 function semaiHandleReportModeKeydown(event) {
   if (event.key !== "Escape") return;
 
-  if (semaiReportPopoverEl) {
-    event.preventDefault();
-    semaiCloseReportPopover();
-    if (semaiReportModeOverlay) {
-      semaiSetReportModeStatus(
-        semaiReportModeOverlay,
-        "Hover an email, click to report it, or press Esc to cancel.",
-        "report"
-      );
-    }
-    return;
-  }
-
   if (!semaiReportModeOverlay) return;
 
   event.preventDefault();
@@ -1241,7 +1361,7 @@ function semaiCloseReportPopover() {
   semaiReportPopoverEl = null;
 }
 
-function semaiOpenReportPopover(overlay, message, subject, clientX, clientY) {
+function semaiOpenReportPopover(overlay, message, subject, clientX, clientY, reportRow = null) {
   semaiCloseReportPopover();
 
   const popover = document.createElement("div");
@@ -1255,11 +1375,14 @@ function semaiOpenReportPopover(overlay, message, subject, clientX, clientY) {
     ></textarea>
     <div class="semai-report-popover-actions">
       <button type="button" class="semai-report-popover-cancel">Cancel</button>
-      <button type="button" class="semai-report-popover-preview">Preview</button>
+      <!-- <button type="button" class="semai-report-popover-preview">Preview</button> -->
       <button type="button" class="semai-report-popover-send">Report</button>
     </div>
     <div class="semai-report-popover-preview-result" style="display:none;">
-      <div class="semai-report-popover-explanation"></div>
+      <details class="semai-report-popover-drawer">
+        <summary class="semai-report-popover-drawer-summary">Claude's explanation</summary>
+        <div class="semai-report-popover-explanation"></div>
+      </details>
       <div class="semai-report-popover-preview-actions">
         <button type="button" class="semai-report-popover-reject" title="Reject — ask Claude for a different fix">✕</button>
         <button type="button" class="semai-report-popover-approve" title="Approve — report to GitHub with this fix">✓</button>
@@ -1272,6 +1395,7 @@ function semaiOpenReportPopover(overlay, message, subject, clientX, clientY) {
   const sendBtn = popover.querySelector(".semai-report-popover-send");
   const previewResult = popover.querySelector(".semai-report-popover-preview-result");
   const explanationEl = popover.querySelector(".semai-report-popover-explanation");
+  const drawerEl = popover.querySelector(".semai-report-popover-drawer");
   const rejectBtn = popover.querySelector(".semai-report-popover-reject");
   const approveBtn = popover.querySelector(".semai-report-popover-approve");
   const input = popover.querySelector(".semai-report-popover-input");
@@ -1281,7 +1405,7 @@ function semaiOpenReportPopover(overlay, message, subject, clientX, clientY) {
 
   function setAllDisabled(disabled) {
     cancelBtn.disabled = disabled;
-    previewBtn.disabled = disabled;
+    if (previewBtn) previewBtn.disabled = disabled;
     sendBtn.disabled = disabled;
     input.disabled = disabled;
     rejectBtn.disabled = disabled;
@@ -1293,13 +1417,13 @@ function semaiOpenReportPopover(overlay, message, subject, clientX, clientY) {
     semaiCloseReportPopover();
     semaiSetReportModeStatus(
       overlay,
-      "Hover an email, click to report it, or press Esc to cancel.",
+      "Hover an email, click to choose it, or press Esc to cancel.",
       "report"
     );
   });
 
   // ── Preview Fix: call Claude via background.js ──
-  previewBtn.addEventListener("click", async () => {
+  previewBtn?.addEventListener("click", async () => {
     const reason = input.value.trim();
     if (!reason) {
       input.focus();
@@ -1318,7 +1442,9 @@ function semaiOpenReportPopover(overlay, message, subject, clientX, clientY) {
       semaiNativeLog(`[semai-preview] Patch received patchType=${patch.patchType} codeLength=${(patch.patchCode||'').length}`);
       currentPatch = patch;
       semaiInjectPreviewPatch(patch.patchType, patch.patchCode);
+      semaiInjectTestBanner(reportRow);
       explanationEl.textContent = patch.explanation;
+      if (drawerEl) drawerEl.open = true;
       previewResult.style.display = "block";
       setAllDisabled(false);
       semaiSetReportModeStatus(overlay, "Fix applied — ✓ approve or ✕ reject for a different fix.", "success");
@@ -1361,7 +1487,9 @@ function semaiOpenReportPopover(overlay, message, subject, clientX, clientY) {
       semaiNativeLog(`[semai-preview] Retry patch received patchType=${patch.patchType}`);
       currentPatch = patch;
       semaiInjectPreviewPatch(patch.patchType, patch.patchCode);
+      semaiInjectTestBanner(reportRow);
       explanationEl.textContent = patch.explanation;
+      if (drawerEl) drawerEl.open = true;
       previewResult.style.display = "block";
       setAllDisabled(false);
       semaiSetReportModeStatus(overlay, "New fix applied — ✓ approve or ✕ reject for another.", "success");
@@ -1428,7 +1556,37 @@ function semaiOpenReportPopover(overlay, message, subject, clientX, clientY) {
   popover.style.left = `${Math.max(margin, left)}px`;
   popover.style.top = `${Math.max(margin, top)}px`;
 
-  semaiSetReportModeStatus(overlay, "Describe the issue, then preview a fix or report as-is.", "report");
+  // ── Drag to reposition ──
+  const titleEl = popover.querySelector(".semai-report-popover-title");
+  let dragStartX = 0, dragStartY = 0, dragOrigLeft = 0, dragOrigTop = 0;
+
+  titleEl.addEventListener("mousedown", (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    dragStartX = e.clientX;
+    dragStartY = e.clientY;
+    dragOrigLeft = parseInt(popover.style.left, 10) || 0;
+    dragOrigTop  = parseInt(popover.style.top,  10) || 0;
+
+    function onMove(ev) {
+      const dx = ev.clientX - dragStartX;
+      const dy = ev.clientY - dragStartY;
+      const newLeft = Math.max(margin, Math.min(window.innerWidth  - popover.offsetWidth  - margin, dragOrigLeft + dx));
+      const newTop  = Math.max(margin, Math.min(window.innerHeight - popover.offsetHeight - margin, dragOrigTop  + dy));
+      popover.style.left = `${newLeft}px`;
+      popover.style.top  = `${newTop}px`;
+    }
+
+    function onUp() {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup",   onUp);
+    }
+
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup",   onUp);
+  });
+
+  semaiSetReportModeStatus(overlay, "Describe the issue, then report it.", "report");
   input.focus();
 }
 
@@ -1471,7 +1629,7 @@ function semaiEnterReportMode(overlay) {
 
   semaiSetReportModeStatus(
     overlay,
-    "Hover an email, click to report it, or press Esc to cancel.",
+    "Hover an email, click to choose it, or press Esc to cancel.",
     "report"
   );
 }
@@ -1528,7 +1686,7 @@ async function semaiHandleReportRowClick(event) {
   const subject = overlay._semaiSubject || "Conversation";
   if (!message) return;
 
-  semaiOpenReportPopover(overlay, message, subject, event.clientX, event.clientY);
+  semaiOpenReportPopover(overlay, message, subject, event.clientX, event.clientY, row);
 }
 
 function semaiGetCalibration() {
@@ -1574,6 +1732,16 @@ function semaiClearCalibrationHover() {
   }
 }
 
+function semaiStopCalibration(message = "Calibration cancelled.", tone = "neutral") {
+  semaiCalibrationState = null;
+  semaiClearCalibrationHover();
+  document.body.classList.remove("semai-calibrating");
+  document.removeEventListener("mousemove", semaiHandleCalibrationHover, true);
+  document.removeEventListener("click", semaiHandleCalibrationClick, true);
+  document.removeEventListener("keydown", semaiHandleCalibrationKeydown, true);
+  semaiUpdateCalibrationStatus(message, tone);
+}
+
 function semaiFindCalibrationTarget(startEl) {
   if (!(startEl instanceof Element)) return null;
 
@@ -1613,12 +1781,20 @@ function semaiFinishCalibration(selfLabel, otherLabel, selector) {
   };
 
   semaiSetCalibration(calibration);
-  semaiCalibrationState = null;
   semaiCurrentUser = null;
   semaiGetCurrentUser();
-  semaiClearCalibrationHover();
-  document.body.classList.remove("semai-calibrating");
-  semaiUpdateCalibrationStatus(`Saved. Using "${selfSender.name}" as you.`, "success");
+  semaiUpdateChatToggleVisibility();
+  semaiUpdateChatToggleBtn();
+  semaiStopCalibration(`Saved. Using "${selfSender.name}" as you.`, "success");
+}
+
+function semaiHandleCalibrationKeydown(event) {
+  if (!semaiCalibrationState) return;
+  if (event.key !== "Escape") return;
+
+  event.preventDefault();
+  event.stopPropagation();
+  semaiStopCalibration();
 }
 
 function semaiHandleCalibrationClick(event) {
@@ -1637,7 +1813,7 @@ function semaiHandleCalibrationClick(event) {
     semaiCalibrationState.selector = semaiBuildSenderSelector(target);
     semaiCalibrationState.step = "other";
     semaiUpdateCalibrationStatus(
-      `Captured you as "${semaiNormalizeSenderLabel(text).name}". Now click a different sender.`,
+      `Step 2: Click on another sender (who is not you).`,
       "other"
     );
     return;
@@ -1648,11 +1824,10 @@ function semaiHandleCalibrationClick(event) {
     text,
     semaiCalibrationState.selector || semaiBuildSenderSelector(target)
   );
-  document.removeEventListener("mousemove", semaiHandleCalibrationHover, true);
-  document.removeEventListener("click", semaiHandleCalibrationClick, true);
 }
 
 function semaiStartCalibration() {
+  semaiStopCalibration("Step 1: Click on your sender label, then Step 2: Click on another sender (who is not you).", "neutral");
   document.removeEventListener("click", semaiHandleCalibrationClick, true);
   document.removeEventListener("mousemove", semaiHandleCalibrationHover, true);
   semaiClearCalibrationHover();
@@ -1663,9 +1838,10 @@ function semaiStartCalibration() {
   };
 
   document.body.classList.add("semai-calibrating");
-  semaiUpdateCalibrationStatus("Setup step 1 of 2: hover and click your sender label.", "self");
+  semaiUpdateCalibrationStatus("Step 1: Click on your sender label.", "self");
   document.addEventListener("mousemove", semaiHandleCalibrationHover, true);
   document.addEventListener("click", semaiHandleCalibrationClick, true);
+  document.addEventListener("keydown", semaiHandleCalibrationKeydown, true);
 }
 
 function semaiNodePrecedesBody(node, bodyEl) {
@@ -2350,6 +2526,13 @@ function semaiGetReadingPane() {
 
 function semaiActivateChatView() {
   if (semaiChatViewActive || semaiChatViewActivationInProgress) return;
+  if (!semaiGetCalibration()?.senderSelector) {
+    semaiUpdateCalibrationStatus(
+      "Train sender detection before turning on chat view.",
+      "neutral"
+    );
+    return;
+  }
   semaiChatViewActivationInProgress = true;
 
   try {
@@ -2428,7 +2611,12 @@ function semaiDeactivateChatView() {
 function semaiUpdateChatToggleBtn() {
   const btn = document.querySelector(".semai-chat-toggle-btn");
   if (!btn) return;
+  const isCalibrated = Boolean(semaiGetCalibration()?.senderSelector);
   btn.textContent = semaiChatViewActive ? "Hide chat view" : "Turn on chat view";
+  btn.disabled = !semaiChatViewActive && !isCalibrated;
+  btn.title = !semaiChatViewActive && !isCalibrated
+    ? "Train sender detection before turning on chat view."
+    : "";
 }
 
 // Show/hide the chat toggle based on whether we're looking at a thread
@@ -2437,6 +2625,7 @@ function semaiUpdateChatToggleVisibility() {
   if (!btn) return;
   const bodies = document.querySelectorAll('[aria-label="Message body"]:not([contenteditable])');
   btn.style.display = bodies.length >= 2 ? "" : "none";
+  semaiUpdateChatToggleBtn();
 }
 
 // Auto-deactivate when Outlook navigates to a different email
@@ -2457,6 +2646,7 @@ function semaiWatchForNavigation() {
       !semaiChatViewActive &&
       !semaiChatViewActivationInProgress &&
       !semaiCalibrationState &&
+      semaiGetCalibration()?.senderSelector &&
       bodies.length >= 2 &&
       sig &&
       sig !== semaiAutoOpenSuppressedSignature

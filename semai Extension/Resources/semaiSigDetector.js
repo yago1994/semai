@@ -178,6 +178,13 @@ function semaiIsEntireBodySignature(clone, senderFirstName) {
   const hasLongSentence = lines.some(l => l.length > 60 && /\s/.test(l));
   if (hasLongSentence) return false;
 
+  // Must NOT have a line that looks like a complete prose sentence:
+  // ≥ 4 words, > 25 chars, ending with sentence punctuation (. ? !)
+  const hasProseSentence = lines.some(l =>
+    l.length > 25 && /[.?!]$/.test(l) && l.split(/\s+/).length >= 4
+  );
+  if (hasProseSentence) return false;
+
   return true;
 }
 
@@ -273,10 +280,12 @@ function semaiFindStandaloneContactCard(container, senderFirstNameOrTokens) {
     if (lines.length === 0) continue;
 
     const firstLine = lines[0];
+    // Strip leading non-letter chars (e.g. dashes like "-Gaëlle Sabben, M.P.H.")
+    const firstLineStripped = firstLine.replace(/^[^\p{L}]+/u, "").trim();
 
-    const matchedToken = nameTokens.find((token) => semaiNameMatchRemainder(firstLine, token) !== null);
+    const matchedToken = nameTokens.find((token) => semaiNameMatchRemainder(firstLineStripped, token) !== null);
     if (!matchedToken) continue;
-    const remainder = semaiNameMatchRemainder(firstLine, matchedToken);
+    const remainder = semaiNameMatchRemainder(firstLineStripped, matchedToken);
     const charAfter = remainder?.[0];
     if (charAfter && !/[\s,.]/.test(charAfter)) continue;
 
@@ -318,6 +327,78 @@ function semaiFindStandaloneContactCard(container, senderFirstNameOrTokens) {
     }
 
     return cutEl;
+  }
+
+  return null;
+}
+
+// ── Table-based signature anchor detection ────────────────────────────────────
+// Detects signatures whose contact info is buried inside deeply nested tables
+// (common with email-signature generators like Woodruff Center's Exclaimer).
+// Strategy: scan the last 40% of the body's direct children; if a child
+// contains a <table> with mailto:/tel: links or a font-size:1px wrapper
+// (classic sig-generator fingerprint), and that table block appears in the
+// last 40% of the total text content, treat it as a signature block.
+// If a short sign-off (≤ 4 words) immediately precedes it, collapse from
+// that sign-off; otherwise collapse from the table block itself.
+
+function semaiFindTableSignatureAnchor(bodyEl, senderNameTokens) {
+  // Unwrap single-child wrapper divs to reach the actual content container
+  let scope = bodyEl;
+  while (scope.children.length === 1 && SEMAI_BLOCK_TAGS.has(scope.children[0].tagName)) {
+    scope = scope.children[0];
+  }
+
+  const children = Array.from(scope.children);
+  if (children.length === 0) return null;
+
+  const startIdx = Math.floor(children.length * 0.6);
+
+  // Total text length for the 40% position safety guard
+  const totalText = (scope.innerText || scope.textContent || "");
+  const totalLen = totalText.length;
+
+  function hasContactTable(el) {
+    // Check for mailto:/tel: links anywhere in the subtree
+    if (el.querySelector('a[href^="mailto:"], a[href^="tel:"], area[href^="mailto:"], area[href^="tel:"]')) {
+      return true;
+    }
+    // Check for font-size:1px wrapper (signature generator fingerprint)
+    const allEls = el.querySelectorAll ? Array.from(el.querySelectorAll("*")) : [];
+    for (const sub of allEls) {
+      const fs = sub.style && sub.style.fontSize;
+      if (fs === "1px") return true;
+    }
+    return false;
+  }
+
+  for (let i = startIdx; i < children.length; i++) {
+    const child = children[i];
+    const childHasTable = child.tagName === "TABLE" || !!child.querySelector("table");
+    if (!childHasTable) continue;
+    if (!hasContactTable(child)) continue;
+
+    // Safety guard: the table block must not appear in the first 40% of the text.
+    // This protects against tables embedded mid-email (e.g. proposal tables).
+    // We only apply this guard when total content is large enough to be meaningful
+    // (short emails with a single sentence before the sig would fail a strict check).
+    if (totalLen > 300) {
+      const childText = (child.innerText || child.textContent || "");
+      const childPos = totalText.indexOf(childText.slice(0, 30));
+      if (childPos > 0 && childPos / totalLen < 0.6) continue;
+    }
+
+    // Check for a short sign-off immediately before this block
+    if (i > 0) {
+      const prevChild = children[i - 1];
+      const prevText = (prevChild.innerText || prevChild.textContent || "").trim();
+      const prevWords = prevText.split(/\s+/).filter(Boolean);
+      if (prevWords.length >= 1 && prevWords.length <= 4 && prevText.length <= 40) {
+        return prevChild;
+      }
+    }
+
+    return child;
   }
 
   return null;
@@ -652,6 +733,15 @@ function semaiStripSignature(body) {
     return;
   }
 
+  // Strategy 5d: Table-based signature anchor (deeply nested contact tables)
+  const tableAnchor = semaiFindTableSignatureAnchor(body, senderNameTokens);
+  if (tableAnchor) {
+    semaiNativeLog(`[semai-sig] Strategy 5d (table anchor): collapsing from [${(tableAnchor).tagName || ""}${(tableAnchor).className ? "." + (tableAnchor).className.toString().split(" ")[0] : ""}]`);
+    semaiCollapseFrom(tableAnchor);
+    return;
+  }
+  semaiNativeLog(`[semai-sig] Strategy 5d skipped (no table signature anchor found)`);
+
   // Strategy 6: Heuristic — contact-card block near the bottom
   const children = Array.from(body.children);
   semaiNativeLog(`[semai-sig] Strategy 6: checking last ${Math.min(6, children.length)} of ${children.length} body children`);
@@ -848,6 +938,13 @@ function semaiCleanBodyClone(bodyEl, senderFirstName) {
   // 6c. Strip standalone contact cards (name + credentials, no sign-off)
   const standaloneCard = semaiFindStandaloneContactCard(clone, cloneNameArg);
   if (standaloneCard) removeFromAndAfter(standaloneCard);
+
+  // 6d. Strip deeply nested table-based signatures
+  const tableAnchorClone = semaiFindTableSignatureAnchor(clone, cloneNameArg);
+  if (tableAnchorClone) {
+    semaiNativeLog(`[semai-sig] cleanBodyClone step 6d (table anchor): removing from [${(tableAnchorClone).tagName || ""}]`);
+    removeFromAndAfter(tableAnchorClone);
+  }
 
   // 7. Strip specific nested-div contact-card signatures
   const nestedDivSig = semaiFindNestedDivSignature(clone);

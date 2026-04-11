@@ -261,6 +261,14 @@
   border-color: rgba(99, 102, 241, 0.5);
 }
 
+.semai-chat-toggle-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+  background: rgba(99, 102, 241, 0.03);
+  border-color: rgba(99, 102, 241, 0.18);
+  color: rgba(99, 102, 241, 0.55);
+}
+
 .semai-calibrate-btn {
   width: 100%;
   padding: 6px 10px;
@@ -552,6 +560,12 @@ body.semai-calibrating * {
   font-weight: 700;
   color: #0f172a;
   margin-bottom: 8px;
+  cursor: grab;
+  user-select: none;
+}
+
+.semai-report-popover-title:active {
+  cursor: grabbing;
 }
 
 .semai-report-popover-input {
@@ -583,10 +597,14 @@ body.semai-calibrating * {
 
 .semai-report-popover-cancel,
 .semai-report-popover-send {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   border-radius: 999px;
   padding: 8px 12px;
   font-size: 12px;
   font-weight: 600;
+  text-align: center;
   cursor: pointer;
 }
 
@@ -625,24 +643,50 @@ body.semai-calibrating * {
 
 .semai-report-popover-preview-result {
   margin-top: 10px;
-  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.semai-report-popover-drawer {
   background: rgba(37, 99, 235, 0.06);
   border-radius: 8px;
   border: 1px solid rgba(37, 99, 235, 0.15);
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  flex-shrink: 1;
   overflow: hidden;
+}
+
+.semai-report-popover-drawer-summary {
+  font-size: 11px;
+  font-weight: 600;
+  color: #2563eb;
+  padding: 8px 10px;
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.semai-report-popover-drawer-summary::before {
+  content: "▶";
+  font-size: 9px;
+  transition: transform 0.15s;
+  display: inline-block;
+}
+
+.semai-report-popover-drawer[open] .semai-report-popover-drawer-summary::before {
+  transform: rotate(90deg);
 }
 
 .semai-report-popover-explanation {
   font-size: 12px;
   line-height: 1.5;
   color: #334155;
-  margin-bottom: 10px;
+  padding: 0 10px 10px;
+  max-height: 180px;
   overflow-y: auto;
-  flex-shrink: 1;
 }
 
 .semai-report-popover-preview-actions {
@@ -665,29 +709,28 @@ body.semai-calibrating * {
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: transform 0.1s, box-shadow 0.1s;
+  transition: transform 0.1s;
 }
 
 .semai-report-popover-reject {
-  border: 1.5px solid rgba(220, 38, 38, 0.4);
-  background: #fff;
-  color: #dc2626;
+  border: 0.4px solid #ff3b30;
+  background: transparent;
+  color: #ff3b30;
 }
 
 .semai-report-popover-reject:hover:not(:disabled) {
-  background: #fef2f2;
+  background: rgba(255, 59, 48, 0.08);
   transform: scale(1.08);
 }
 
 .semai-report-popover-approve {
-  border: none;
-  background: #16a34a;
-  color: #ffffff;
-  box-shadow: 0 4px 12px rgba(22, 163, 74, 0.35);
+  border: 0.4px solid #007aff;
+  background: transparent;
+  color: #007aff;
 }
 
 .semai-report-popover-approve:hover:not(:disabled) {
-  background: #15803d;
+  background: rgba(0, 122, 255, 0.08);
   transform: scale(1.08);
 }
 
