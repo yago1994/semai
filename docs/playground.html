@@ -1,0 +1,1033 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>REMOU — Signature Detection Playground</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: #f5f5f5;
+    color: #1a1a2e;
+    min-height: 100vh;
+  }
+
+  header {
+    background: #1e1b4b;
+    color: #fff;
+    padding: 14px 24px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  header .logo {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 3px;
+    color: #a78bfa;
+    text-transform: uppercase;
+  }
+  header .sep { color: #4c1d95; font-size: 18px; }
+  header h1 {
+    font-size: 15px;
+    font-weight: 600;
+    color: #e9d5ff;
+    letter-spacing: 0.5px;
+  }
+
+  .container { max-width: 1400px; margin: 0 auto; padding: 24px; }
+
+  /* ── Input panel ── */
+  .input-panel {
+    background: #fff;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    padding: 20px;
+    margin-bottom: 20px;
+  }
+  .input-panel h2 {
+    font-size: 13px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: #7c3aed;
+    margin-bottom: 16px;
+  }
+  .input-row {
+    display: flex;
+    gap: 12px;
+    align-items: flex-start;
+    flex-wrap: wrap;
+    margin-bottom: 12px;
+  }
+  .input-group {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .input-group label {
+    font-size: 11px;
+    font-weight: 600;
+    color: #6b7280;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .input-group input {
+    padding: 7px 10px;
+    border: 1px solid #d1d5db;
+    border-radius: 5px;
+    font-size: 13px;
+    min-width: 220px;
+    outline: none;
+    transition: border-color 0.15s;
+  }
+  .input-group input:focus { border-color: #7c3aed; box-shadow: 0 0 0 2px #ede9fe; }
+
+  textarea#htmlInput {
+    width: 100%;
+    height: 120px;
+    font-family: "SF Mono", "Fira Code", "Courier New", monospace;
+    font-size: 11.5px;
+    padding: 10px;
+    border: 1px solid #d1d5db;
+    border-radius: 5px;
+    resize: vertical;
+    outline: none;
+    color: #374151;
+    background: #fafafa;
+    transition: border-color 0.15s;
+    margin-bottom: 12px;
+  }
+  textarea#htmlInput:focus { border-color: #7c3aed; background: #fff; box-shadow: 0 0 0 2px #ede9fe; }
+
+  .btn-row { display: flex; gap: 10px; flex-wrap: wrap; }
+  button {
+    padding: 8px 18px;
+    border: none;
+    border-radius: 5px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s;
+    letter-spacing: 0.2px;
+  }
+  .btn-primary {
+    background: #7c3aed;
+    color: #fff;
+  }
+  .btn-primary:hover { background: #6d28d9; }
+  .btn-secondary {
+    background: #f3f4f6;
+    color: #374151;
+    border: 1px solid #d1d5db;
+  }
+  .btn-secondary:hover { background: #e5e7eb; }
+  .btn-small {
+    padding: 4px 10px;
+    font-size: 11px;
+    font-weight: 500;
+    background: #ede9fe;
+    color: #5b21b6;
+    border: 1px solid #c4b5fd;
+    border-radius: 4px;
+  }
+  .btn-small:hover { background: #ddd6fe; }
+
+  /* ── Side-by-side panes ── */
+  .panes {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin-bottom: 24px;
+  }
+  .pane {
+    background: #fff;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  .pane-header {
+    padding: 10px 16px;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .pane-header.original { background: #fef2f2; color: #991b1b; border-bottom: 1px solid #fecaca; }
+  .pane-header.cleaned  { background: #f0fdf4; color: #166534; border-bottom: 1px solid #bbf7d0; }
+  .pane-header .dot { width: 8px; height: 8px; border-radius: 50%; }
+  .pane-header.original .dot { background: #f87171; }
+  .pane-header.cleaned .dot  { background: #4ade80; }
+  iframe.preview {
+    width: 100%;
+    height: 380px;
+    border: none;
+    display: block;
+  }
+  .pane-empty {
+    height: 380px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #9ca3af;
+    font-size: 13px;
+    font-style: italic;
+  }
+
+  /* ── Test results ── */
+  .tests-panel {
+    background: #fff;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    padding: 20px;
+  }
+  .tests-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 16px;
+  }
+  .tests-header h2 {
+    font-size: 13px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: #7c3aed;
+  }
+  .summary-badge {
+    font-size: 12px;
+    font-weight: 700;
+    padding: 4px 12px;
+    border-radius: 12px;
+    background: #f3f4f6;
+    color: #374151;
+  }
+  .summary-badge.all-pass { background: #dcfce7; color: #166534; }
+  .summary-badge.some-fail { background: #fee2e2; color: #991b1b; }
+
+  table.results-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+  table.results-table thead tr {
+    background: #f9fafb;
+    border-bottom: 2px solid #e5e7eb;
+  }
+  table.results-table th {
+    padding: 8px 12px;
+    text-align: left;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: #6b7280;
+  }
+  table.results-table td {
+    padding: 8px 12px;
+    border-bottom: 1px solid #f3f4f6;
+    vertical-align: middle;
+  }
+  table.results-table tr:last-child td { border-bottom: none; }
+  table.results-table tr:hover td { background: #fafafa; }
+
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+  }
+  .badge.pass { background: #dcfce7; color: #166534; }
+  .badge.fail { background: #fee2e2; color: #991b1b; }
+  .badge.pending { background: #f3f4f6; color: #6b7280; }
+
+  .fail-details {
+    margin-top: 4px;
+    font-size: 11px;
+    color: #dc2626;
+    font-family: "SF Mono", "Fira Code", monospace;
+  }
+
+  .sender-token {
+    font-family: "SF Mono", "Fira Code", monospace;
+    font-size: 11px;
+    background: #f3f4f6;
+    padding: 1px 5px;
+    border-radius: 3px;
+    color: #374151;
+  }
+
+  .status-bar {
+    font-size: 12px;
+    color: #6b7280;
+    margin-top: 8px;
+    min-height: 18px;
+  }
+  .status-bar.error { color: #dc2626; }
+  .status-bar.success { color: #059669; }
+
+  .debug-panel {
+    display: none;
+    margin-top: 10px;
+    background: #0f172a;
+    border-radius: 6px;
+    padding: 10px 12px;
+    font-size: 11px;
+    font-family: "SF Mono", Menlo, monospace;
+    color: #94a3b8;
+    max-height: 180px;
+    overflow-y: auto;
+    line-height: 1.6;
+  }
+  .debug-panel.visible { display: block; }
+  .debug-panel .log-strategy { color: #38bdf8; font-weight: 600; }
+  .debug-panel .log-skip    { color: #64748b; }
+  .debug-panel .log-hit     { color: #4ade80; font-weight: 600; }
+  .debug-panel .log-warning { color: #f59e0b; }
+</style>
+</head>
+<body>
+
+<header>
+  <span class="logo">Remou</span>
+  <span class="sep">|</span>
+  <h1>Signature Detection Playground</h1>
+</header>
+
+<div class="container">
+
+  <!-- Input panel -->
+  <div class="input-panel">
+    <h2>Manual Test</h2>
+    <textarea id="htmlInput" placeholder="Paste raw Outlook email HTML here…"></textarea>
+    <div class="input-row">
+      <div class="input-group">
+        <label>Sender Name</label>
+        <input type="text" id="senderInput" placeholder="e.g. daniel  or  drane, daniel l">
+      </div>
+    </div>
+    <div class="btn-row">
+      <button class="btn-primary" onclick="runDetection()">Run Detection</button>
+      <button class="btn-secondary" onclick="runAllTests()">Run All Tests</button>
+      <button class="btn-secondary" onclick="clearManualTest()">Clear</button>
+    </div>
+    <div class="status-bar" id="statusBar"></div>
+    <div class="debug-panel" id="debugPanel"></div>
+  </div>
+
+  <!-- Side-by-side preview -->
+  <div class="panes">
+    <div class="pane">
+      <div class="pane-header original">
+        <span class="dot"></span>
+        Original HTML — removed text highlighted
+      </div>
+      <div id="leftPaneWrap">
+        <div class="pane-empty">Paste HTML and click "Run Detection"</div>
+      </div>
+    </div>
+    <div class="pane">
+      <div class="pane-header cleaned">
+        <span class="dot"></span>
+        Cleaned HTML — kept text highlighted
+      </div>
+      <div id="rightPaneWrap">
+        <div class="pane-empty">Cleaned output will appear here</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Test results -->
+  <div class="tests-panel">
+    <div class="tests-header">
+      <h2>Test Battery</h2>
+      <span class="summary-badge" id="summaryBadge">9 cases — not run</span>
+    </div>
+    <table class="results-table">
+      <thead>
+        <tr>
+          <th style="width:30%">Test Case</th>
+          <th style="width:12%">Sender</th>
+          <th style="width:10%">Result</th>
+          <th style="width:38%">Details</th>
+          <th style="width:10%">Inspect</th>
+        </tr>
+      </thead>
+      <tbody id="testResultsBody">
+        <!-- populated by JS -->
+      </tbody>
+    </table>
+  </div>
+
+</div>
+
+<script>
+// Shims — must be defined before semaiSigDetector.js loads
+let _debugLogs = [];
+
+function semaiNativeLog(text) {
+  console.log("[playground]", text);
+  _debugLogs.push(text);
+}
+function semaiLog(msg, details) {
+  if (details !== undefined) console.log(msg, details);
+  else console.log(msg);
+}
+</script>
+<script src="semaiSigDetector.js"></script>
+<script>
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Sender name parsing (mirrors what the test suite does)
+// ─────────────────────────────────────────────────────────────────────────────
+
+function parseSenderInput(raw) {
+  const s = (raw || "").trim().toLowerCase();
+  if (!s) return null;
+  // If contains comma, treat as "Last, First [Middle]" → return array of tokens
+  // filtering single-char tokens
+  if (s.includes(",")) {
+    const tokens = s.split(/[\s,]+/).filter(t => t.length >= 2);
+    return tokens.length > 0 ? tokens : null;
+  }
+  // Single token (e.g. "daniel") — return as string
+  const tokens = s.split(/\s+/).filter(t => t.length >= 2);
+  if (tokens.length === 1) return tokens[0];
+  return tokens.length > 0 ? tokens : null;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Diff highlighting helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+function collectLeafTextNodes(html) {
+  const tmp = document.createElement("div");
+  tmp.innerHTML = html;
+  const texts = new Set();
+  const walker = document.createTreeWalker(tmp, NodeFilter.SHOW_TEXT);
+  let node;
+  while ((node = walker.nextNode())) {
+    const t = (node.textContent || "").trim();
+    if (t) texts.add(t);
+  }
+  return texts;
+}
+
+// Build an iframe srcdoc with text that was removed wrapped in <mark> for the
+// left pane, and text that was kept (present in cleaned) wrapped in <mark> for
+// the right pane.
+function buildHighlightedHtml(html, removedTexts, markStyle) {
+  if (!html) return "<em style='color:#9ca3af;font-size:13px;font-style:italic;padding:16px;display:block'>(empty — entire email was a signature)</em>";
+
+  // We apply highlighting by walking text nodes in a temp div
+  const tmp = document.createElement("div");
+  tmp.innerHTML = html;
+
+  if (removedTexts && removedTexts.size > 0) {
+    const walker = document.createTreeWalker(tmp, NodeFilter.SHOW_TEXT);
+    const toMark = [];
+    let node;
+    while ((node = walker.nextNode())) {
+      const t = (node.textContent || "").trim();
+      if (t && removedTexts.has(t)) {
+        toMark.push(node);
+      }
+    }
+    for (const textNode of toMark) {
+      const mark = document.createElement("mark");
+      mark.style.cssText = markStyle;
+      const parent = textNode.parentNode;
+      parent.insertBefore(mark, textNode);
+      mark.appendChild(textNode);
+    }
+  }
+
+  return tmp.innerHTML;
+}
+
+function buildIframeSrcdoc(bodyHtml) {
+  return `<!DOCTYPE html><html><head><meta charset="UTF-8">
+<style>
+  body { font-family: Calibri, Arial, sans-serif; font-size: 11pt; padding: 12px 16px; margin: 0; line-height: 1.5; }
+  mark { border-radius: 2px; padding: 0 1px; }
+</style>
+</head><body>${bodyHtml}</body></html>`;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Clear manual test panel
+// ─────────────────────────────────────────────────────────────────────────────
+
+function clearManualTest() {
+  document.getElementById("htmlInput").value = "";
+  document.getElementById("senderInput").value = "";
+  document.getElementById("leftPaneWrap").innerHTML = '<div class="pane-empty">Paste HTML and click "Run Detection"</div>';
+  document.getElementById("rightPaneWrap").innerHTML = '<div class="pane-empty">Cleaned output will appear here</div>';
+  const statusBar = document.getElementById("statusBar");
+  statusBar.textContent = "";
+  statusBar.className = "status-bar";
+  const debugPanel = document.getElementById("debugPanel");
+  debugPanel.innerHTML = "";
+  debugPanel.classList.remove("visible");
+  _debugLogs = [];
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Run detection from the manual input panel
+// ─────────────────────────────────────────────────────────────────────────────
+
+function runDetection() {
+  const html = document.getElementById("htmlInput").value.trim();
+  const senderRaw = document.getElementById("senderInput").value.trim();
+  const statusBar = document.getElementById("statusBar");
+  const debugPanel = document.getElementById("debugPanel");
+
+  if (!html) {
+    statusBar.textContent = "Paste some HTML first.";
+    statusBar.className = "status-bar error";
+    return;
+  }
+
+  // Reset debug log capture
+  _debugLogs = [];
+
+  try {
+    const senderTokens = parseSenderInput(senderRaw);
+    const bodyEl = document.createElement("div");
+    bodyEl.dataset.semaiOriginalHtml = html;
+    const cleanedHtml = semaiCleanBodyClone(bodyEl, senderTokens);
+
+    renderPanes(html, cleanedHtml);
+
+    const senderDesc = senderTokens
+      ? (Array.isArray(senderTokens) ? JSON.stringify(senderTokens) : `"${senderTokens}"`)
+      : "(no sender)";
+    statusBar.textContent = `Detection complete. Sender: ${senderDesc}. Cleaned HTML length: ${cleanedHtml.length} chars.`;
+    statusBar.className = "status-bar success";
+  } catch (err) {
+    statusBar.textContent = `Error: ${err.message}`;
+    statusBar.className = "status-bar error";
+    console.error(err);
+  }
+
+  // Render debug log
+  if (_debugLogs.length > 0) {
+    debugPanel.innerHTML = _debugLogs.map(line => {
+      let cls = "log-skip";
+      if (/Strategy \d.*(MATCH|collapsing|removing|hiding)/i.test(line)) cls = "log-hit";
+      else if (/Strategy \d/i.test(line)) cls = "log-strategy";
+      else if (/skipped/i.test(line)) cls = "log-skip";
+      else if (/false positive|warning/i.test(line)) cls = "log-warning";
+      return `<div class="${cls}">${line.replace(/</g, "&lt;").replace(/>/g, "&gt;")}</div>`;
+    }).join("");
+    debugPanel.classList.add("visible");
+    debugPanel.scrollTop = debugPanel.scrollHeight;
+  } else {
+    debugPanel.classList.remove("visible");
+  }
+}
+
+function renderPanes(originalHtml, cleanedHtml) {
+  const origTexts = collectLeafTextNodes(originalHtml);
+  const cleanTexts = collectLeafTextNodes(cleanedHtml);
+
+  // Removed = in original but not in cleaned
+  const removedTexts = new Set([...origTexts].filter(t => !cleanTexts.has(t)));
+  // Kept = in cleaned
+  const keptTexts = cleanTexts;
+
+  const leftHtml = buildHighlightedHtml(
+    originalHtml,
+    removedTexts,
+    "background:#fecaca;text-decoration:line-through"
+  );
+  const rightHtml = buildHighlightedHtml(
+    cleanedHtml,
+    keptTexts,
+    "background:#bbf7d0"
+  );
+
+  const leftWrap = document.getElementById("leftPaneWrap");
+  const rightWrap = document.getElementById("rightPaneWrap");
+
+  leftWrap.innerHTML = "";
+  rightWrap.innerHTML = "";
+
+  const leftFrame = document.createElement("iframe");
+  leftFrame.className = "preview";
+  leftFrame.setAttribute("sandbox", "allow-same-origin");
+  leftFrame.srcdoc = buildIframeSrcdoc(leftHtml);
+  leftWrap.appendChild(leftFrame);
+
+  const rightFrame = document.createElement("iframe");
+  rightFrame.className = "preview";
+  rightFrame.setAttribute("sandbox", "allow-same-origin");
+  rightFrame.srcdoc = buildIframeSrcdoc(rightHtml);
+  rightWrap.appendChild(rightFrame);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Test battery
+// ─────────────────────────────────────────────────────────────────────────────
+
+const PLAYGROUND_TEST_CASES = [
+  {
+    label: "Daniel Drane / Emory contact card",
+    sender: "daniel",
+    html: `<div visibility="hidden"><div>
+<div dir="ltr">
+<div lang="en-US" style="word-wrap:break-word;">
+<div>
+<p style="font-size:11pt;font-family:Calibri,sans-serif;margin:0;">Let's take a look at the summary statements and see what kind of feedback we're getting.&nbsp; I am happy that you got the K99/R00 back. That softens the blow a bit.&nbsp; </p>
+<p style="font-size:11pt;font-family:Calibri,sans-serif;margin:0;">&nbsp;</p>
+<p style="font-size:11pt;font-family:Calibri,sans-serif;margin:0;">This was a tough cycle, as there were a lot of backed up grants from the fall…I got one discussed but I had a lot of friends not get discussed at all. </p>
+<p style="font-size:11pt;font-family:Calibri,sans-serif;margin:0;">&nbsp;</p>
+<p style="font-size:11pt;font-family:Calibri,sans-serif;margin:0;">daniel</p>
+<p style="font-size:11pt;font-family:Calibri,sans-serif;margin:0;">&nbsp;</p>
+<div>
+<p style="font-size:11pt;font-family:Calibri,sans-serif;margin:0;">Daniel L. Drane, Ph.D., ABPP(CN)</p>
+<p style="font-size:11pt;font-family:Calibri,sans-serif;margin:0;">Professor of Neurology and Pediatrics</p>
+<p style="font-size:11pt;font-family:Calibri,sans-serif;margin:0;">Emory University School of Medicine</p>
+<p style="font-size:11pt;font-family:Calibri,sans-serif;margin:0;">Woodruff Memorial Research Building</p>
+<p style="font-size:11pt;font-family:Calibri,sans-serif;margin:0;">101 Woodruff Circle, Suite 6111</p>
+<p style="font-size:11pt;font-family:Calibri,sans-serif;margin:0;">Mailstop: 1930-001-1AN</p>
+<p style="font-size:11pt;font-family:Calibri,sans-serif;margin:0;">Atlanta, Georgia 30322</p>
+<p style="font-size:11pt;font-family:Calibri,sans-serif;margin:0;">(404)727-2844 (office)</p>
+<p style="font-size:11pt;font-family:Calibri,sans-serif;margin:0;">ddrane@emory.edu</p>
+<p style="font-size:11pt;font-family:Calibri,sans-serif;margin:0;">&nbsp;</p>
+<p style="font-size:11pt;font-family:Calibri,sans-serif;margin:0;">Affiliate Professor of Neurology</p>
+<p style="font-size:11pt;font-family:Calibri,sans-serif;margin:0;">University of Washington</p></div></div></div></div></div>
+</div>`,
+    mustKeep: [
+      "Let's take a look at the summary statements",
+      "This was a tough cycle"
+    ],
+    mustRemove: [
+      "Daniel L. Drane, Ph.D.",
+      "Professor of Neurology and Pediatrics",
+      "Emory University School of Medicine",
+      "(404)727-2844",
+      "ddrane@emory.edu"
+    ]
+  },
+  {
+    label: "Mandi Schmitt / UserTesting outreach signature",
+    sender: "mandi",
+    html: `<div visibility="hidden"><div>
+<div dir="ltr">
+<div><table align="left" border="0" cellspacing="0" cellpadding="0" style="width:100%;">
+<tbody><tr>
+<td valign="middle" bgcolor="#A6A6A6" style="width:0;padding:7px 2px;"></td>
+<td valign="middle" bgcolor="#EAEAEA" style="font-size:12px;font-family:wf_segoe-ui_normal,Segoe UI,Tahoma,Arial,sans-serif;width:100%;padding:7px 5px 7px 15px;">
+<div>You don't often get email from mschmitt@usertesting.com. <a href="https://aka.ms/LearnAboutSenderIdentification" target="_blank" rel="noopener noreferrer">Learn why this is important</a> </div></td>
+<td align="left" valign="middle" bgcolor="#EAEAEA" style="font-size:12px;font-family:wf_segoe-ui_normal,Segoe UI,Tahoma,Arial,sans-serif;width:75px;padding:7px 5px;"></td></tr></tbody></table>
+<div>
+<div style="font-size:12px;font-family:sans-serif;">
+<div style="font-size:12px;font-family:sans-serif;">
+<div style="font-size:9pt;font-family:Arial,Helvetica,sans-serif;">
+<div>Hi Santiago,</div>
+<div style="font-size:9pt;font-family:Arial,Helvetica,sans-serif;">&nbsp;</div>
+<div>I'm reaching out to ensure we're fully supporting Emory National Primate Research Center ahead of your renewal on June 17, 2026.</div>
+<div style="font-size:9pt;font-family:Arial,Helvetica,sans-serif;">&nbsp;</div>
+<div style="font-size:9pt;font-family:Arial,Helvetica,sans-serif;">If there's anything standing in the way of finalizing the next phase of our partnership—whether budget, scope, or internal priorities—we're happy to help work through it.</div>
+<div style="font-size:9pt;font-family:Arial,Helvetica,sans-serif;">&nbsp;</div>
+<div>We've really enjoyed partnering with your team and are excited about what's next. Let us know how we can help move things forward.</div>
+<div style="font-size:9pt;font-family:Arial,Helvetica,sans-serif;">&nbsp;</div>
+<div>Best,</div>
+<div style="font-size:9pt;font-family:Arial,Helvetica,sans-serif;">Mandi</div></div>
+<div>
+<div style="font-size:9pt;font-family:sans-serif;">
+<div><table border="0" cellspacing="0" cellpadding="0" style="height:138px;">
+<tbody><tr style="height:138px;">
+<td valign="top" width="92">
+  <img src="https://example.com/headshot.jpg" width="82" height="82" alt="Mandi Schmitt headshot" />
+</td>
+<td valign="top" width="488">
+  <div><strong>Mandi Schmitt</strong></div>
+  <div>Senior Account Executive</div>
+  <div>UserTesting</div>
+  <div><a href="mailto:mschmitt@usertesting.com">mschmitt@usertesting.com</a></div>
+  <div><a href="https://www.linkedin.com/in/mandi-schmitt">LinkedIn</a></div>
+  <div><a href="https://calendar.usertesting.com/mschmitt">Schedule a meeting</a></div>
+</td></tr></tbody></table></div>
+<div style="font-size:9pt;font-family:Arial;line-height:16px;">&nbsp;</div></div></div><br>
+<br>
+<div><a href="https://hello.userinterviews.com/t/113544/opt_out/4b07c105-7177-481c-b916-81114b6a189d">Would you like to opt out?</a></div></div></div></div>
+</div></div></div>`,
+    mustKeep: [
+      "Hi Santiago,",
+      "I'm reaching out to ensure we're fully supporting",
+      "We've really enjoyed partnering"
+    ],
+    mustRemove: [
+      "Senior Account Executive",
+      "mschmitt@usertesting.com",
+      "Would you like to opt out?"
+    ]
+  },
+  {
+    label: "Leah Ekube / Pendo compact branded signature",
+    sender: "leah",
+    html: `<div visibility="hidden"><div>
+<div dir="ltr">
+<div dir="ltr">
+<p style="color:black;font-family:Arial;margin:0;line-height:normal;font-stretch:normal;font-size-adjust:none;"><b>Leah Ekube<i>&nbsp;</i></b><i>(she/her)</i><i></i></p>
+<p style="color:black;font-family:Arial;margin:0;line-height:normal;font-stretch:normal;font-size-adjust:none;"><span>Renewal Specialist&nbsp;&nbsp;</span>|<span>&nbsp; </span><a href="https://nam11.safelinks.protection.outlook.com/?url=http%3A%2F%2Fwww.pendo.io%2F" target="_blank" rel="noopener noreferrer"><span style="color:#103CC0;">pendo.io</span></a><span>&nbsp; </span>|<span>&nbsp;&nbsp;</span></p>
+<p style="color:#D1D3DF;font-size:11px;font-family:Arial;margin:0;line-height:normal;font-stretch:normal;font-size-adjust:none;">————</p>
+<p style="color:#D1D3DF;font-size:11px;font-family:Arial;margin:0;line-height:normal;font-stretch:normal;font-size-adjust:none;"><img data-imagetype="External" src="https://ci3.googleusercontent.com/mail-sig/AIorK4xDj2uZt40t0dFiwuMNlX6Yz_XkAo-922MqPlFHSY67LhVyOWr0rGkRxeV5XK0eNExm6ewXXOCMFJ0T" width="420" height="56"></p></div></div></div></div>
+</div>`,
+    mustKeep: [],
+    mustRemove: [
+      "Leah Ekube",
+      "Renewal Specialist",
+      "pendo.io"
+    ]
+  },
+  {
+    label: "Wilbur Lam / last-name-first display name",
+    sender: "wilbur",
+    html: `<div visibility="hidden"><div>
+<div dir="ltr">
+<div dir="ltr">
+<div lang="en-US" style="word-wrap:break-word;">
+<div>
+<p style="font-size:12pt;font-family:Aptos,sans-serif;margin:0;"><span style="font-size:11pt;font-family:Calibri,sans-serif;">Let's change my stuff so that it's more catered to the DigitalStudio. See below and feel free to edit</span></p>
+<p style="font-size:12pt;font-family:Aptos,sans-serif;margin:0;"><span style="font-size:11pt;font-family:Calibri,sans-serif;">&nbsp;</span></p>
+<p style="font-size:12pt;font-family:Aptos,sans-serif;margin:0;"><span style="font-size:11pt;font-family:Calibri,sans-serif;">Dr. Lam is a Professor in the Department of Pediatrics, Division of Pediatric Hematology/Oncology and Dept of Biomedical Engineering, Emory University and Georgia Institute of Technology. His unique background as a physician-scientist-engineer trained in clinical pediatric hematology/oncology as well as bioengineering makes him an ideal Director of the DigitalStudio.</span></p>
+<p style="font-size:12pt;font-family:Aptos,sans-serif;margin:0;"><span style="font-size:11pt;font-family:Calibri,sans-serif;">&nbsp;</span></p>
+<div>
+<p style="font-size:12pt;font-family:Aptos,sans-serif;margin:0;"><span style="font-size:9pt;">Wilbur A. Lam, MD, PhD</span></p>
+<p style="font-size:12pt;font-family:Aptos,sans-serif;margin:0;"><span style="font-size:9pt;">Professor and W. Paul Bowers Research Chair</span></p>
+<p style="font-size:12pt;font-family:Aptos,sans-serif;margin:0;"><span style="font-size:9pt;">Department of Pediatrics and the Wallace H. Coulter Department of Biomedical Engineering</span></p>
+<p style="font-size:12pt;font-family:Aptos,sans-serif;margin:0;"><span style="font-size:9pt;">Aflac Cancer and Blood Disorders Center at Children's Healthcare of Atlanta</span></p>
+<p style="font-size:12pt;font-family:Aptos,sans-serif;margin:0;"><span style="font-size:9pt;">Director, Center for the Advancement of Diagnostics for a Just Society (ADJUST Center)</span></p>
+<p style="font-size:12pt;font-family:Aptos,sans-serif;margin:0;"><span style="font-size:9pt;">Co-Director, Pediatric Technology Center</span></p>
+<p style="font-size:12pt;font-family:Aptos,sans-serif;margin:0;"><span style="font-size:9pt;">Associate Dean of Innovation, Emory University School of Medicine</span></p>
+<p style="font-size:12pt;font-family:Aptos,sans-serif;margin:0;"><span style="font-size:9pt;">Vice Provost for Entrepreneurship, Emory University</span></p>
+</div></div></div></div></div></div>
+</div>`,
+    mustKeep: [
+      "Let's change my stuff so that it's more catered to the DigitalStudio",
+      "Dr. Lam is a Professor in the Department of Pediatrics"
+    ],
+    mustRemove: [
+      "Wilbur A. Lam, MD, PhD",
+      "Professor and W. Paul Bowers Research Chair",
+      "Wallace H. Coulter Department of Biomedical Engineering",
+      "Vice Provost for Entrepreneurship"
+    ]
+  },
+  {
+    label: "Daniel Drane no-signoff variant",
+    sender: "daniel",
+    html: `<div visibility="hidden"><div>
+<div lang="en-US" style="word-wrap:break-word;">
+<div>
+<p style="font-size:11pt;font-family:Calibri,sans-serif;margin:0;">All great ideas!</p>
+<p style="font-size:11pt;font-family:Calibri,sans-serif;margin:0;">&nbsp;</p>
+<div>
+<p style="font-size:11pt;font-family:Calibri,sans-serif;margin:0;">Daniel L. Drane, Ph.D., ABPP(CN)</p>
+<p style="font-size:11pt;font-family:Calibri,sans-serif;margin:0;">Professor of Neurology and Pediatrics</p>
+<p style="font-size:11pt;font-family:Calibri,sans-serif;margin:0;">Emory University School of Medicine</p>
+<p style="font-size:11pt;font-family:Calibri,sans-serif;margin:0;">Woodruff Memorial Research Building</p>
+<p style="font-size:11pt;font-family:Calibri,sans-serif;margin:0;">101 Woodruff Circle, Suite 6111</p>
+<p style="font-size:11pt;font-family:Calibri,sans-serif;margin:0;">Mailstop: 1930-001-1AN</p>
+<p style="font-size:11pt;font-family:Calibri,sans-serif;margin:0;">Atlanta, Georgia 30322</p>
+<p style="font-size:11pt;font-family:Calibri,sans-serif;margin:0;">(404)727-2844 (office)</p>
+<p style="font-size:11pt;font-family:Calibri,sans-serif;margin:0;">ddrane@emory.edu</p>
+<p style="font-size:11pt;font-family:Calibri,sans-serif;margin:0;">&nbsp;</p>
+<p style="font-size:11pt;font-family:Calibri,sans-serif;margin:0;">Affiliate Professor of Neurology</p>
+<p style="font-size:11pt;font-family:Calibri,sans-serif;margin:0;">University of Washington</p></div></div></div></div>
+</div>`,
+    mustKeep: [
+      "All great ideas!"
+    ],
+    mustRemove: [
+      "Daniel L. Drane, Ph.D.",
+      "Professor of Neurology and Pediatrics",
+      "Emory University School of Medicine",
+      "(404)727-2844",
+      "ddrane@emory.edu"
+    ]
+  },
+  {
+    label: "Daniel Drane no-signoff, Last-First sender format",
+    sender: ["drane", "daniel"],
+    html: `<div visibility="hidden"><div>
+<div lang="en-US" style="word-wrap:break-word;">
+<div>
+<p style="font-size:11pt;font-family:Calibri,sans-serif;margin:0;">All great ideas!</p>
+<p style="font-size:11pt;font-family:Calibri,sans-serif;margin:0;">&nbsp;</p>
+<div>
+<p style="font-size:11pt;font-family:Calibri,sans-serif;margin:0;">Daniel L. Drane, Ph.D., ABPP(CN)</p>
+<p style="font-size:11pt;font-family:Calibri,sans-serif;margin:0;">Professor of Neurology and Pediatrics</p>
+<p style="font-size:11pt;font-family:Calibri,sans-serif;margin:0;">Emory University School of Medicine</p>
+<p style="font-size:11pt;font-family:Calibri,sans-serif;margin:0;">Woodruff Memorial Research Building</p>
+<p style="font-size:11pt;font-family:Calibri,sans-serif;margin:0;">101 Woodruff Circle, Suite 6111</p>
+<p style="font-size:11pt;font-family:Calibri,sans-serif;margin:0;">Mailstop: 1930-001-1AN</p>
+<p style="font-size:11pt;font-family:Calibri,sans-serif;margin:0;">Atlanta, Georgia 30322</p>
+<p style="font-size:11pt;font-family:Calibri,sans-serif;margin:0;">(404)727-2844 (office)</p>
+<p style="font-size:11pt;font-family:Calibri,sans-serif;margin:0;">ddrane@emory.edu</p>
+<p style="font-size:11pt;font-family:Calibri,sans-serif;margin:0;">&nbsp;</p>
+<p style="font-size:11pt;font-family:Calibri,sans-serif;margin:0;">Affiliate Professor of Neurology</p>
+<p style="font-size:11pt;font-family:Calibri,sans-serif;margin:0;">University of Washington</p></div></div></div></div>
+</div>`,
+    mustKeep: [
+      "All great ideas!"
+    ],
+    mustRemove: [
+      "Daniel L. Drane, Ph.D.",
+      "Professor of Neurology and Pediatrics",
+      "Emory University School of Medicine",
+      "(404)727-2844",
+      "ddrane@emory.edu"
+    ]
+  },
+  {
+    label: "Sent from my iPhone mobile auto-signature",
+    sender: null,
+    html: `<div>
+<p>Hey, just checking in. Are we still on for Thursday?</p>
+<p>&nbsp;</p>
+<p>Sent from my iPhone</p>
+</div>`,
+    mustKeep: [
+      "Hey, just checking in. Are we still on for Thursday?"
+    ],
+    mustRemove: [
+      "Sent from my iPhone"
+    ]
+  },
+  {
+    label: "Gaelle Sabben accent-insensitive signature match",
+    sender: ["sabben", "gaelle"],
+    html: `<div name="x_divtagdefaultwrapper">
+<div>
+<div>
+<p>Quick note before we connect tomorrow.</p>
+<p>&nbsp;</p>
+<div style="margin-top:9.75pt;margin-bottom:9.75pt;">
+<p style="font-size:12pt;font-family:Aptos,sans-serif;background-color:white;margin:0;"><span style="color:#4472C4;font-size:9pt;font-family:Georgia,serif;">-Ga\u00eblle Sabben,\u00a0M.P.H.</span><span style="color:black;font-size:10pt;font-family:Helvetica,sans-serif;"></span></p>
+<p style="font-size:12pt;font-family:Aptos,sans-serif;background-color:white;margin:0;"><span style="color:#4472C4;font-size:9pt;font-family:Georgia,serif;">\u00a0</span><span style="color:black;font-size:10pt;font-family:Helvetica,sans-serif;"></span></p>
+<p style="font-size:12pt;font-family:Aptos,sans-serif;background-color:white;margin:0;"><i><span style="color:#4472C4;font-size:9pt;font-family:Georgia,serif;">Lead Public Health Program Associate| Hubert Department of Global Health</span></i><span style="color:black;font-size:10pt;font-family:Helvetica,sans-serif;"></span></p>
+<p style="font-size:12pt;font-family:Aptos,sans-serif;background-color:white;margin:0;"><i><span style="color:#4472C4;font-size:9pt;font-family:Georgia,serif;">Rollins School of Public Health| Emory University</span></i><span style="color:black;font-size:10pt;font-family:Helvetica,sans-serif;"></span></p>
+<p style="font-size:12pt;font-family:Aptos,sans-serif;background-color:white;margin:0;"><span style="color:black;font-size:10pt;font-family:Helvetica,sans-serif;">\u00a0</span></p>
+<p style="font-size:12pt;font-family:Aptos,sans-serif;background-color:white;margin:0;"><span style="color:#4472C4;font-size:9pt;font-family:Georgia,serif;">Phone: (404) 683-3103</span><span style="color:black;font-size:10pt;font-family:Helvetica,sans-serif;"></span></p>
+<p style="font-size:12pt;font-family:Aptos,sans-serif;background-color:white;margin:0;"><span style="color:#4472C4;font-size:9pt;font-family:Georgia,serif;">Email: </span><span style="color:#0563C1;font-size:9pt;font-family:Georgia,serif;">gaelle.sabben@emory.edu</span><span style="color:black;font-size:10pt;font-family:Helvetica,sans-serif;"></span></p>
+<p style="font-size:12pt;font-family:Aptos,sans-serif;background-color:white;margin:0;"><span style="color:#4472C4;font-size:9pt;font-family:Georgia,serif;">\u00a0Pronouns: she/her/hers</span><span style="color:black;font-size:10pt;font-family:Helvetica,sans-serif;"></span></p></div></div></div></div>`,
+    mustKeep: [
+      "Quick note before we connect tomorrow."
+    ],
+    mustRemove: [
+      "Ga\u00eblle Sabben",
+      "Lead Public Health Program Associate",
+      "Rollins School of Public Health",
+      "(404) 683-3103",
+      "gaelle.sabben@emory.edu",
+      "Pronouns: she/her/hers"
+    ]
+  },
+  {
+    label: "Hala Moddelmog / Woodruff Center nested table signature",
+    sender: "hala",
+    html: `<div visibility="hidden"><div>
+<div dir="ltr">
+<div style="color:black;font-size:11pt;font-family:Aptos,Aptos_EmbeddedFont,Aptos_MSFontService,Calibri,Helvetica,sans-serif;">Just confirming our meeting tomorrow at 2pm.</div>
+<div style="color:black;font-size:11pt;font-family:Aptos,Aptos_EmbeddedFont,Aptos_MSFontService,Calibri,Helvetica,sans-serif;">&nbsp;</div>
+<div style="color:black;font-size:11pt;font-family:Aptos,Aptos_EmbeddedFont,Aptos_MSFontService,Calibri,Helvetica,sans-serif;">Hala</div>
+<div style="font-size:1px;direction:ltr;"><table border="0" cellspacing="0" cellpadding="0" style="font-size:1px;direction:ltr;width:100%;border-collapse:collapse;">
+<tbody><tr><td align="left" style="vertical-align:top;"><table border="0" cellspacing="0" cellpadding="0" style="border-collapse:collapse;">
+<tbody><tr><td align="left" style="vertical-align:top;padding:30px 0 0 0;"><table border="0" cellspacing="0" cellpadding="0" style="border-collapse:collapse;">
+<tbody><tr><td style="padding:0;">&nbsp;</td>
+<td align="center" style="vertical-align:middle;padding:0 0 0 5px;"><table border="0" cellspacing="0" cellpadding="0" style="border-collapse:collapse;">
+<tbody><tr><td align="left" style="vertical-align:top;"><table border="0" cellspacing="0" cellpadding="0" style="border-collapse:collapse;">
+<tbody><tr><td align="left" style="vertical-align:top;"><table border="0" cellspacing="0" cellpadding="0" style="border-collapse:collapse;">
+<tbody><tr style="line-height:normal;"><td align="left" style="vertical-align:top;">
+<map name="x_map_dd0e1662"><area href="mailto:Hala.Moddelmog@woodruffcenter.org" target="_blank" shape="rect" coords="0,0,146,20"></map>
+</td></tr></tbody></table></td></tr></tbody></table></td></tr></tbody></table></td></tr></tbody></table>
+<table border="0" cellspacing="0" cellpadding="0" style="border-collapse:collapse;line-height:normal;">
+<tbody><tr>
+<td align="left" style="vertical-align:top;padding:0;"><table border="0" cellspacing="0" cellpadding="0" style="color:#000001;font-size:16px;font-family:Calibri,Arial,sans-serif;border-collapse:collapse;white-space:nowrap;">
+<tbody><tr><td><a href="tel:404-733-4257" style="color:#000001;text-decoration:none;">404-733-4257</a></td></tr></tbody></table></td></tr>
+<tr><td align="left" style="vertical-align:top;padding:0;"><table border="0" cellspacing="0" cellpadding="0" style="color:#000001;font-size:13px;font-family:Calibri,Arial,sans-serif;border-collapse:collapse;white-space:nowrap;">
+<tbody><tr><td><a href="mailto:Hala.Moddelmog@woodruffcenter.org" style="color:#000001;text-decoration:none;">Hala.Moddelmog@woodruffcenter.org</a></td></tr></tbody></table></td></tr>
+</tbody></table></td></tr></tbody></table></td></tr></tbody></table></div>
+</div></div></div>`,
+    mustKeep: [
+      "Just confirming our meeting tomorrow at 2pm."
+    ],
+    mustRemove: [
+      "Hala.Moddelmog@woodruffcenter.org",
+      "404-733-4257"
+    ]
+  }
+];
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Run a single test case — returns { passed, failDetails }
+// ─────────────────────────────────────────────────────────────────────────────
+
+function runTestCase(tc) {
+  const bodyEl = document.createElement("div");
+  bodyEl.dataset.semaiOriginalHtml = tc.html;
+  const cleanHtml = semaiCleanBodyClone(bodyEl, tc.sender);
+
+  const tmp = document.createElement("div");
+  tmp.innerHTML = cleanHtml;
+  const cleanText = (tmp.textContent || "").replace(/\s+/g, " ").trim();
+
+  const failDetails = [];
+
+  for (const phrase of (tc.mustKeep || [])) {
+    if (!cleanText.includes(phrase)) {
+      failDetails.push(`should keep: "${phrase}"`);
+    }
+  }
+  for (const phrase of (tc.mustRemove || [])) {
+    if (cleanText.includes(phrase)) {
+      failDetails.push(`should remove: "${phrase}"`);
+    }
+  }
+
+  return { passed: failDetails.length === 0, failDetails, cleanHtml };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Render the test table (initial state — all pending)
+// ─────────────────────────────────────────────────────────────────────────────
+
+function renderTestTable(results) {
+  const tbody = document.getElementById("testResultsBody");
+  tbody.innerHTML = "";
+
+  PLAYGROUND_TEST_CASES.forEach((tc, idx) => {
+    const result = results ? results[idx] : null;
+    const tr = document.createElement("tr");
+
+    // Label
+    const tdLabel = document.createElement("td");
+    tdLabel.style.fontWeight = "500";
+    tdLabel.textContent = tc.label;
+    tr.appendChild(tdLabel);
+
+    // Sender
+    const tdSender = document.createElement("td");
+    const senderStr = tc.sender === null
+      ? "(none)"
+      : Array.isArray(tc.sender)
+        ? tc.sender.join(", ")
+        : tc.sender;
+    const senderSpan = document.createElement("span");
+    senderSpan.className = "sender-token";
+    senderSpan.textContent = senderStr;
+    tdSender.appendChild(senderSpan);
+    tr.appendChild(tdSender);
+
+    // Result badge
+    const tdResult = document.createElement("td");
+    if (result === null) {
+      const badge = document.createElement("span");
+      badge.className = "badge pending";
+      badge.textContent = "—";
+      tdResult.appendChild(badge);
+    } else {
+      const badge = document.createElement("span");
+      badge.className = `badge ${result.passed ? "pass" : "fail"}`;
+      badge.textContent = result.passed ? "PASS" : "FAIL";
+      tdResult.appendChild(badge);
+    }
+    tr.appendChild(tdResult);
+
+    // Details
+    const tdDetails = document.createElement("td");
+    if (result && !result.passed) {
+      const div = document.createElement("div");
+      div.className = "fail-details";
+      div.textContent = result.failDetails.join(" | ");
+      tdDetails.appendChild(div);
+    } else if (result && result.passed) {
+      tdDetails.style.color = "#6b7280";
+      tdDetails.style.fontSize = "12px";
+      const keeps = (tc.mustKeep || []).length;
+      const removes = (tc.mustRemove || []).length;
+      tdDetails.textContent = `${keeps} keep checks, ${removes} remove checks — all passed`;
+    } else {
+      tdDetails.style.color = "#9ca3af";
+      tdDetails.style.fontSize = "12px";
+      tdDetails.textContent = "Click \"Run All Tests\" to execute";
+    }
+    tr.appendChild(tdDetails);
+
+    // Inspect button
+    const tdInspect = document.createElement("td");
+    const btn = document.createElement("button");
+    btn.className = "btn-small";
+    btn.textContent = "Load";
+    btn.onclick = () => loadTestIntoEditor(idx, result);
+    tdInspect.appendChild(btn);
+    tr.appendChild(tdInspect);
+
+    tbody.appendChild(tr);
+  });
+}
+
+function loadTestIntoEditor(idx, result) {
+  const tc = PLAYGROUND_TEST_CASES[idx];
+  document.getElementById("htmlInput").value = tc.html;
+
+  const senderStr = tc.sender === null
+    ? ""
+    : Array.isArray(tc.sender)
+      ? tc.sender.join(", ")
+      : tc.sender;
+  document.getElementById("senderInput").value = senderStr;
+
+  // If we already have a result, use it; otherwise run detection now
+  if (result) {
+    renderPanes(tc.html, result.cleanHtml);
+    const statusBar = document.getElementById("statusBar");
+    statusBar.textContent = `Loaded: "${tc.label}" — ${result.passed ? "PASS" : "FAIL"}`;
+    statusBar.className = result.passed ? "status-bar success" : "status-bar error";
+  } else {
+    runDetection();
+  }
+
+  // Scroll to top
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Run all tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+function runAllTests() {
+  const results = PLAYGROUND_TEST_CASES.map(tc => runTestCase(tc));
+  renderTestTable(results);
+
+  const passed = results.filter(r => r.passed).length;
+  const total = results.length;
+  const badge = document.getElementById("summaryBadge");
+  badge.textContent = `${passed} / ${total} passed`;
+  badge.className = `summary-badge ${passed === total ? "all-pass" : "some-fail"}`;
+
+  // Scroll to tests panel
+  document.querySelector(".tests-panel").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Init
+// ─────────────────────────────────────────────────────────────────────────────
+
+renderTestTable(null);
+</script>
+</body>
+</html>
