@@ -124,26 +124,88 @@ function semaiActivateElement(el) {
   }
 }
 
-function semaiFindReplyAllButton() {
-  const selector = [
-    'button[aria-label*="Reply all" i]',
-    '[role="button"][aria-label*="Reply all" i]',
-    'button[title*="Reply all" i]',
-    '[role="button"][title*="Reply all" i]',
-    '[data-testid*="replyall" i]',
-    '[name*="replyall" i]'
-  ].join(", ");
+function semaiGetElementActionText(el) {
+  if (!(el instanceof Element)) return "";
 
-  const matches = Array.from(document.querySelectorAll(selector)).filter(semaiIsVisibleElement);
-  const outlookMatches = matches.filter((el) => !semaiIsInsideRemouUi(el));
-  if (outlookMatches.length > 0) return outlookMatches[outlookMatches.length - 1];
+  return [
+    el.getAttribute("aria-label"),
+    el.getAttribute("title"),
+    el.getAttribute("name"),
+    el.getAttribute("data-testid"),
+    el.getAttribute("data-icon-name"),
+    el.textContent
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
 
-  const textMatches = Array.from(document.querySelectorAll('button, [role="button"]'))
+function semaiFindVisibleActionElement(matcher) {
+  const candidates = Array.from(document.querySelectorAll(`
+    button,
+    [role="button"],
+    [role="menuitem"],
+    [role="option"],
+    [tabindex],
+    [aria-label],
+    [title],
+    [data-testid],
+    [data-icon-name]
+  `))
     .filter(semaiIsVisibleElement)
     .filter((el) => !semaiIsInsideRemouUi(el))
-    .filter((el) => /reply all/i.test(el.getAttribute("aria-label") || el.textContent || ""));
+    .filter((el) => matcher(semaiGetElementActionText(el), el));
 
-  return textMatches[textMatches.length - 1] || null;
+  return candidates[candidates.length - 1] || null;
+}
+
+function semaiFindReplyAllButton() {
+  return semaiFindVisibleActionElement((text) => (
+    /\breply(?:\s+to)?\s+all\b/i.test(text) ||
+    /replyall/i.test(text) ||
+    /reply-all/i.test(text)
+  ));
+}
+
+function semaiFindReplyButton() {
+  return semaiFindVisibleActionElement((text) => (
+    /\breply\b/i.test(text) &&
+    !/\breply(?:\s+to)?\s+all\b/i.test(text) &&
+    !/\bforward\b/i.test(text)
+  ));
+}
+
+function semaiFindReplyAllModeSwitcher() {
+  return semaiFindVisibleActionElement((text) => (
+    /\breply(?:\s+to)?\s+all\b/i.test(text) ||
+    /\brespond\b/i.test(text) ||
+    /\bmore reply actions\b/i.test(text)
+  ));
+}
+
+async function semaiEnsureReplyAllMode(timeoutMs = 2500) {
+  const directReplyAll = semaiFindReplyAllButton();
+  if (directReplyAll) {
+    return true;
+  }
+
+  const switcher = semaiFindReplyAllModeSwitcher();
+  if (switcher) {
+    semaiActivateElement(switcher);
+    const startedAt = Date.now();
+
+    while (Date.now() - startedAt < timeoutMs) {
+      await new Promise((resolve) => window.setTimeout(resolve, 120));
+      const menuReplyAll = semaiFindReplyAllButton();
+      if (menuReplyAll) {
+        semaiActivateElement(menuReplyAll);
+        return true;
+      }
+    }
+  }
+
+  return false;
 }
 
 function semaiFindSendButton() {
@@ -199,12 +261,22 @@ async function semaiOpenReplyAllCompose() {
   if (composeEl) return composeEl;
 
   const replyAllBtn = semaiFindReplyAllButton();
-  if (!replyAllBtn) {
-    throw new Error("Reply all button not found in Outlook.");
+  if (replyAllBtn) {
+    semaiActivateElement(replyAllBtn);
+    composeEl = await semaiWaitForComposeElement();
+    return composeEl;
   }
 
-  semaiActivateElement(replyAllBtn);
+  const replyBtn = semaiFindReplyButton();
+  if (!replyBtn) {
+    throw new Error("Reply controls not found in Outlook.");
+  }
+
+  semaiActivateElement(replyBtn);
   composeEl = await semaiWaitForComposeElement();
+
+  // Some Outlook thread states only expose a generic Reply action until the compose UI opens.
+  await semaiEnsureReplyAllMode();
   return composeEl;
 }
 
@@ -734,6 +806,7 @@ function createPanel() {
       if (semaiChatViewActive) {
         semaiDeactivateChatView();
       } else {
+        semaiChatViewPinned = true;
         semaiActivateChatView();
       }
       return;
@@ -770,12 +843,24 @@ function createPanel() {
     semaiEnsurePanelVisible(panel, false);
   });
   const calibration = semaiGetCalibration();
+  const calibrateBtn = panel.querySelector(".semai-calibrate-btn");
+  if (calibrateBtn) {
+    calibrateBtn.textContent = calibration
+      ? "Retrain sender detection"
+      : "Set up Remou";
+  }
   semaiUpdateCalibrationStatus(
-    calibration?.senderSelector
-      ? "Sender detection is trained for this Outlook layout."
-      : "Step 1: Click on your sender label, then Step 2: Click on another sender (who is not you).",
-    calibration?.senderSelector ? "success" : "neutral"
+    calibration
+      ? "✓ Setup complete. You can retrain anytime."
+      : "👆 Start here — tell Remou who you are.",
+    calibration ? "success" : "neutral"
   );
+
+  // Show first-run onboarding modal if never calibrated
+  if (!calibration) {
+    semaiShowOnboardingModal();
+  }
+
   semaiLog("[semai] Panel created");
 }
 
@@ -786,10 +871,12 @@ function createPanel() {
 
 let semaiChatViewActive = false;
 let semaiChatViewActivationInProgress = false;
+let semaiChatViewPinned = false;
 let semaiCurrentUser = null; // { name, email, initials }
 let semaiReportHoverRow = null;
 let semaiReportModeOverlay = null;
 let semaiReportPopoverEl = null;
+let semaiReportMissedBodies = [];
 
 // Deterministic avatar colour from name — 8-colour palette
 const SEMAI_AVATAR_COLORS = [
@@ -801,11 +888,68 @@ function semaiNameColor(name) {
   return SEMAI_AVATAR_COLORS[Math.abs(h) % SEMAI_AVATAR_COLORS.length];
 }
 
+function semaiFirstNameFromDisplayName(displayName) {
+  const name = (displayName || "")
+    .replace(/^from:\s*/i, "")
+    .replace(/<[^>]+>/g, "")
+    .trim();
+
+  if (!name) return "";
+
+  if (name.includes(",")) {
+    const afterComma = (name.split(/\s*,\s*/, 2)[1] || "")
+      .split(/\s+/)
+      .find((token) => token.length >= 2 && /^\p{L}/u.test(token));
+    if (afterComma) {
+      return afterComma;
+    }
+  }
+
+  return (name.split(/[\s,<(@]+/)[0] || "").trim();
+}
+
 function semaiInitials(name) {
-  const parts = name.trim().split(/\s+/).filter(Boolean);
+  const cleaned = (name || "")
+    .replace(/^from:\s*/i, "")
+    .replace(/<[^>]+>/g, "")
+    .trim();
+
+  if (!cleaned) return "?";
+
+  const splitPart = (text) => text
+    .split(/\s+/)
+    .map((token) => token.replace(/^[^A-Za-zÀ-ÿ]+|[^A-Za-zÀ-ÿ]+$/g, ""))
+    .filter((token) => token.length >= 2);
+
+  let parts;
+  if (cleaned.includes(",")) {
+    const [last, rest] = cleaned.split(/\s*,\s*/, 2);
+    parts = [...splitPart(rest || ""), ...splitPart(last || "")];
+  } else {
+    parts = splitPart(cleaned);
+  }
+
   if (parts.length === 0) return "?";
   if (parts.length === 1) return parts[0][0].toUpperCase();
   return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+}
+
+function semaiLooksLikeAttachmentLabel(text) {
+  const value = (text || "").replace(/\s+/g, " ").trim();
+  if (!value) return false;
+
+  return (
+    /\.(pdf|doc|docx|xls|xlsx|ppt|pptx|png|jpg|jpeg|gif|webp|heic|heif|mp4|mov|avi|mkv|webm|zip|csv|txt)\b/i.test(value) ||
+    /\b(open|download|preview|attachment|attachments)\b/i.test(value)
+  );
+}
+
+function semaiLooksLikeSenderName(text) {
+  const value = (text || "").replace(/\s+/g, " ").trim();
+  if (!value) return false;
+  if (semaiLooksLikeAttachmentLabel(value)) return false;
+  if (/^to:/i.test(value)) return false;
+  return /[A-Za-z]/.test(value);
 }
 
 function semaiEscapeHtml(text) {
@@ -829,11 +973,15 @@ function semaiTrimForGitHubIssue(value, maxLength = SEMAI_GITHUB_ISSUE_SECTION_L
   return `${text.slice(0, maxLength)}\n\n[truncated ${text.length - maxLength} characters]`;
 }
 
-function semaiBuildGitHubIssueTitle(subject, senderName) {
+function semaiBuildGitHubIssueTitle(reason, subject) {
+  const normalizedReason = String(reason || "").replace(/\s+/g, " ").trim();
+  if (normalizedReason) {
+    return normalizedReason.slice(0, 240);
+  }
+
   return [
     "UI issue",
-    subject || "Conversation",
-    senderName || "Unknown sender"
+    subject || "Conversation"
   ]
     .map((part) => String(part || "").replace(/\s+/g, " ").trim())
     .filter(Boolean)
@@ -845,6 +993,8 @@ function semaiBuildFallbackGitHubIssueBody(message, subject, reason) {
   const senderName = message.sender?.name || "Unknown";
   const senderEmail = message.sender?.email || "Unknown";
   const timestamp = message.timestamp || "Unknown";
+  const bubbleRole = message.isMe ? "me/right-aligned" : "them/left-aligned";
+  const bubbleInitials = message.sender?.initials || semaiInitials(senderName);
 
   return [
     "## Reported from REMOU",
@@ -852,6 +1002,8 @@ function semaiBuildFallbackGitHubIssueBody(message, subject, reason) {
     `- Subject: ${subject || "Conversation"}`,
     `- Sender: ${senderName}`,
     `- Sender Email: ${senderEmail}`,
+    `- Sender Initials: ${bubbleInitials}`,
+    `- Chat Bubble: ${bubbleRole}`,
     `- Timestamp: ${timestamp}`,
     `- Page URL: ${window.location.href}`,
     "",
@@ -927,6 +1079,8 @@ function semaiBuildGitHubIssueBody(message, subject, reason) {
   const senderEmail = message.sender?.email || "Unknown";
   const timestamp = message.timestamp || "Unknown";
   const fixtureHtml = semaiCaptureFixtureHtml();
+  const bubbleRole = message.isMe ? "me/right-aligned" : "them/left-aligned";
+  const bubbleInitials = message.sender?.initials || semaiInitials(senderName);
 
   const parts = [
     "## Reported from REMOU",
@@ -934,6 +1088,8 @@ function semaiBuildGitHubIssueBody(message, subject, reason) {
     `- Subject: ${subject || "Conversation"}`,
     `- Sender: ${senderName}`,
     `- Sender Email: ${senderEmail}`,
+    `- Sender Initials: ${bubbleInitials}`,
+    `- Chat Bubble: ${bubbleRole}`,
     `- Timestamp: ${timestamp}`,
     `- Page URL: ${window.location.href}`,
     "",
@@ -978,7 +1134,7 @@ async function semaiCreateGitHubIssue(message, subject, reason) {
     throw new Error("Missing GitHub repo in secrets.js.");
   }
 
-  const title = semaiBuildGitHubIssueTitle(subject, message.sender?.name);
+  const title = semaiBuildGitHubIssueTitle(reason, subject);
   const issueUrl = `https://api.github.com/repos/${REMOU_GITHUB_REPO}/issues`;
   const headers = {
     "Accept": "application/vnd.github+json",
@@ -1307,7 +1463,7 @@ async function semaiCreateApprovedFixIssue(message, subject, reason, patch) {
   if (!REMOU_GITHUB_TOKEN) throw new Error("Missing GitHub token in secrets.js.");
   if (!REMOU_GITHUB_REPO) throw new Error("Missing GitHub repo in secrets.js.");
 
-  const title = semaiBuildGitHubIssueTitle(subject, message.sender?.name);
+  const title = semaiBuildGitHubIssueTitle(reason, subject);
   const response = await fetch(`https://api.github.com/repos/${REMOU_GITHUB_REPO}/issues`, {
     method: "POST",
     headers: {
@@ -1338,6 +1494,26 @@ function semaiClearReportHover() {
     semaiReportHoverRow.classList.remove("semai-chat-row-report-hover");
     semaiReportHoverRow = null;
   }
+}
+
+function semaiClearMissedOriginalHighlights() {
+  semaiReportMissedBodies.forEach((bodyEl) => {
+    bodyEl.classList.remove("semai-original-message-report-missed");
+  });
+  semaiReportMissedBodies = [];
+}
+
+function semaiHighlightMissedOriginalMessages(overlay) {
+  semaiClearMissedOriginalHighlights();
+
+  const messages = overlay?._semaiMessages || [];
+  messages.forEach((message) => {
+    if (message.cleanHtml) return;
+    if (!(message.sourceBodyEl instanceof HTMLElement)) return;
+
+    message.sourceBodyEl.classList.add("semai-original-message-report-missed");
+    semaiReportMissedBodies.push(message.sourceBodyEl);
+  });
 }
 
 function semaiSetReportModeStatus(overlay, message, tone = "neutral") {
@@ -1414,12 +1590,7 @@ function semaiOpenReportPopover(overlay, message, subject, clientX, clientY, rep
 
   cancelBtn.addEventListener("click", () => {
     semaiRemovePreviewPatch();
-    semaiCloseReportPopover();
-    semaiSetReportModeStatus(
-      overlay,
-      "Hover an email, click to choose it, or press Esc to cancel.",
-      "report"
-    );
+    semaiExitReportMode(overlay);
   });
 
   // ── Preview Fix: call Claude via background.js ──
@@ -1598,6 +1769,7 @@ function semaiExitReportMode(overlay, statusMessage, tone = "neutral") {
   document.removeEventListener("keydown", semaiHandleReportModeKeydown, true);
   semaiReportModeOverlay = null;
   semaiClearReportHover();
+  semaiClearMissedOriginalHighlights();
   semaiCloseReportPopover();
 
   const reportButton = overlay.querySelector("#semai-chat-report-issue-btn");
@@ -1627,6 +1799,8 @@ function semaiEnterReportMode(overlay) {
     reportButton.classList.add("semai-chat-report-issue-btn-active");
   }
 
+  semaiHighlightMissedOriginalMessages(overlay);
+
   semaiSetReportModeStatus(
     overlay,
     "Hover an email, click to choose it, or press Esc to cancel.",
@@ -1641,8 +1815,8 @@ function semaiToggleReportMode(overlay) {
     semaiExitReportMode(
       overlay,
       overlay.dataset.viewMode === "real"
-        ? "The original Outlook thread is visible above the reply box. Use the eye button to switch back to chat bubbles."
-        : "Chat view is on. Use the eye button to switch only the thread view above this reply box."
+        ? "The original Outlook thread is visible above the reply box. Use the eye button to switch back to chat."
+        : "Chat view is on. Use the eye button to switch back to regular Outlook."
     );
     return;
   }
@@ -1746,13 +1920,13 @@ function semaiFindCalibrationTarget(startEl) {
   if (!(startEl instanceof Element)) return null;
 
   const candidate = startEl.closest(
-    '.OZZZK, [data-testid="senderName"], [class*="senderName" i], [class*="sender-name" i], .ms-Persona-primaryText, span, button, div'
+    '.OZZZK, [data-testid="senderName"], [class*="senderName" i], [class*="sender-name" i], .ms-Persona-primaryText'
   );
   if (!candidate) return null;
 
   const text = (candidate.innerText || candidate.textContent || "").trim();
   if (!text || text.length > 160) return null;
-  if (!/[A-Za-z]/.test(text)) return null;
+  if (!semaiLooksLikeSenderName(text)) return null;
 
   return candidate;
 }
@@ -1785,6 +1959,9 @@ function semaiFinishCalibration(selfLabel, otherLabel, selector) {
   semaiGetCurrentUser();
   semaiUpdateChatToggleVisibility();
   semaiUpdateChatToggleBtn();
+  semaiDismissOnboardingModal();
+  const calibrateBtn = document.querySelector(".semai-calibrate-btn");
+  if (calibrateBtn) calibrateBtn.textContent = "Retrain sender detection";
   semaiStopCalibration(`Saved. Using "${selfSender.name}" as you.`, "success");
 }
 
@@ -1827,7 +2004,7 @@ function semaiHandleCalibrationClick(event) {
 }
 
 function semaiStartCalibration() {
-  semaiStopCalibration("Step 1: Click on your sender label, then Step 2: Click on another sender (who is not you).", "neutral");
+  semaiStopCalibration("Step 1: Click your sender name only. Do not click a To/recipient field. Step 2: Click another sender who is not you.", "neutral");
   document.removeEventListener("click", semaiHandleCalibrationClick, true);
   document.removeEventListener("mousemove", semaiHandleCalibrationHover, true);
   semaiClearCalibrationHover();
@@ -1838,10 +2015,53 @@ function semaiStartCalibration() {
   };
 
   document.body.classList.add("semai-calibrating");
-  semaiUpdateCalibrationStatus("Step 1: Click on your sender label.", "self");
+  semaiUpdateCalibrationStatus("Step 1: Click on your sender name only, not a To/recipient field.", "self");
   document.addEventListener("mousemove", semaiHandleCalibrationHover, true);
   document.addEventListener("click", semaiHandleCalibrationClick, true);
   document.addEventListener("keydown", semaiHandleCalibrationKeydown, true);
+}
+
+// ===== ONBOARDING MODAL =====
+
+function semaiShowOnboardingModal() {
+  if (document.getElementById("semai-onboarding-modal")) return;
+
+  const modal = document.createElement("div");
+  modal.id = "semai-onboarding-modal";
+  modal.innerHTML = `
+    <div class="semai-onboarding-card">
+      <div class="semai-onboarding-logo">
+        <div class="semai-logo-dot" style="width:14px;height:14px;margin-right:8px;flex-shrink:0;"></div>
+        <span style="font-size:14px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#0f172a;">Remou</span>
+      </div>
+      <h2 class="semai-onboarding-headline">One quick setup before you start</h2>
+      <p class="semai-onboarding-body">
+        Remou needs to know who you are so it can tell your messages apart from others in chat view.
+      </p>
+      <ol class="semai-onboarding-steps">
+        <li>Click "Start setup" below — the panel will enter setup mode.</li>
+        <li>An email thread will appear highlighted — click on your name where it shows as the sender, not in any To/recipient line.</li>
+        <li>Then click on any other person's name in a different message.</li>
+      </ol>
+      <p class="semai-onboarding-body" style="margin-top:0;">
+        That's it. Remou will remember your identity for future sessions.
+      </p>
+      <button class="semai-onboarding-cta" type="button" id="semai-onboarding-cta-btn">Start setup →</button>
+      <p class="semai-onboarding-note">You can redo this anytime from the Remou panel.</p>
+    </div>
+  `;
+
+  modal.querySelector("#semai-onboarding-cta-btn").addEventListener("click", () => {
+    semaiDismissOnboardingModal();
+    semaiStartCalibration();
+  });
+
+  document.body.appendChild(modal);
+}
+
+function semaiDismissOnboardingModal() {
+  const modal = document.getElementById("semai-onboarding-modal");
+  if (modal) modal.remove();
 }
 
 function semaiNodePrecedesBody(node, bodyEl) {
@@ -1876,29 +2096,29 @@ function semaiGetSenderLabelNearBody(bodyEl) {
     if (calibration?.senderSelector) {
       if (sibling.matches?.(calibration.senderSelector)) {
         const text = (sibling.innerText || sibling.textContent || "").trim();
-        if (text) return text;
+        if (semaiLooksLikeSenderName(text)) return text;
       }
 
       const calibratedLabel = sibling.querySelector?.(calibration.senderSelector);
       if (calibratedLabel) {
         const text = (calibratedLabel.innerText || calibratedLabel.textContent || "").trim();
-        if (text) return text;
+        if (semaiLooksLikeSenderName(text)) return text;
       }
     }
 
     if (sibling.matches(".OZZZK")) {
       const text = (sibling.innerText || sibling.textContent || "").trim();
-      if (text) return text;
+      if (semaiLooksLikeSenderName(text)) return text;
     }
 
     const directLabel = sibling.querySelector?.(".OZZZK");
     if (directLabel) {
       const text = (directLabel.innerText || directLabel.textContent || "").trim();
-      if (text) return text;
+      if (semaiLooksLikeSenderName(text)) return text;
     }
 
     const text = (sibling.innerText || sibling.textContent || "").trim();
-    if (text && text.length <= 120 && /^[A-Za-z]/.test(text)) {
+    if (text && text.length <= 120 && semaiLooksLikeSenderName(text)) {
       return text;
     }
     sibling = sibling.previousElementSibling;
@@ -1975,12 +2195,6 @@ function semaiGetCurrentUser() {
     return semaiCurrentUser;
   }
 
-  // ── Strategy 0: Config-defined name (most reliable) ──
-  if (typeof SEMAI_USER_NAME === "string" && SEMAI_USER_NAME.trim().length >= 2) {
-    trySet(SEMAI_USER_NAME);
-    return semaiCurrentUser;
-  }
-
   // ── Strategy 1: UI-based — try many selectors ──
   const uiSelectors = [
     '#mectrl_currentAccount_primary',
@@ -2032,7 +2246,7 @@ function semaiGetCurrentUser() {
     } catch (e) { /* skip */ }
   }
 
-  console.log("[semai] Current user detection failed — set SEMAI_USER_NAME in semaiConfig.js");
+  console.log("[semai] Current user detection failed — complete Remou setup to identify your account.");
   return null;
 }
 
@@ -2063,7 +2277,7 @@ function semaiGetMessageSender(bodyEl) {
   const nearbySenderLabel = semaiGetSenderLabelNearBody(bodyEl);
   if (nearbySenderLabel) {
     const normalized = semaiNormalizeSenderLabel(nearbySenderLabel);
-    if (normalized.name.length >= 2 && /^[A-Za-z]/.test(normalized.name)) {
+    if (normalized.name.length >= 2 && semaiLooksLikeSenderName(normalized.name)) {
       name = normalized.name;
     }
     if (normalized.email) {
@@ -2078,7 +2292,7 @@ function semaiGetMessageSender(bodyEl) {
       if (found) {
         const raw = (found.getAttribute("aria-label") || found.innerText || found.textContent || "").trim();
         const normalized = semaiNormalizeSenderLabel(raw);
-        if (normalized.name.length >= 2 && /^[A-Za-z]/.test(normalized.name)) {
+        if (normalized.name.length >= 2 && semaiLooksLikeSenderName(normalized.name)) {
           name = normalized.name;
         }
         if (!email && normalized.email) {
@@ -2251,7 +2465,7 @@ function semaiExtractThreadMessages() {
     const rawHtml = bodyEl.dataset.semaiOriginalHtml || bodyEl.innerHTML;
     const isMe = semaiIsCurrentUser(sender.name, sender.email);
     const hasAttachment = semaiMessageHasAttachmentBlock(bodyEl);
-    return { sender, timestamp, cleanHtml, rawHtml, isMe, hasAttachment };
+    return { sender, timestamp, cleanHtml, rawHtml, isMe, hasAttachment, sourceBodyEl: bodyEl };
   });
 }
 
@@ -2358,11 +2572,11 @@ function semaiCreateChatOverlay(messages, subject) {
       id="semai-chat-reply-input"
       class="semai-chat-reply-input"
       rows="2"
-      placeholder="Type a reply-all draft for the latest message…"
+      placeholder="Type a reply-all response to the latest message…"
     ></textarea>
     <div class="semai-chat-composer-footer">
       <div id="semai-chat-reply-status" class="semai-chat-reply-status">
-        Chat view is on. Use the eye button to switch only the thread view above this reply box.
+        Chat view is on. Use the eye button to switch back to regular Outlook.
       </div>
       <div class="semai-chat-reply-actions">
         <button
@@ -2440,8 +2654,8 @@ function semaiUpdateOverlayViewToggle(overlay) {
 
   if (status && overlay.dataset.reportMode !== "active") {
     status.textContent = isChatView
-      ? "Chat view is on. Use the eye button to switch only the thread view above this reply box."
-      : "The original Outlook thread is visible above the reply box. Use the eye button to switch back to chat bubbles.";
+      ? "Chat view is on. Use the eye button to switch back to regular Outlook."
+      : "The original Outlook thread is visible above the reply box. Use the eye button to switch back to chat.";
     delete status.dataset.tone;
   }
 
@@ -2534,11 +2748,12 @@ function semaiActivateChatView() {
     return;
   }
   semaiChatViewActivationInProgress = true;
+  semaiChatViewPinned = true;
 
   try {
     // Ensure we have the current user
     if (!semaiGetCurrentUser()) {
-      alert("semai couldn't identify your account.\nSet SEMAI_USER_NAME in semaiConfig.js.");
+      alert("Remou couldn't identify your account.\nComplete setup first by clicking 'Train sender detection' in the Remou panel.");
       return;
     }
 
@@ -2591,7 +2806,7 @@ function semaiActivateChatView() {
   }
 }
 
-function semaiDeactivateChatView() {
+function semaiDeactivateChatView(preservePinned = false) {
   const overlay = document.getElementById("semai-chat-overlay");
   const readingPane = overlay?.parentElement;
   document.removeEventListener("keydown", semaiHandleReportModeKeydown, true);
@@ -2602,6 +2817,9 @@ function semaiDeactivateChatView() {
   if (overlay) overlay.remove();
   semaiRemoveReadingPaneBottomClearance(readingPane);
   semaiChatViewActive = false;
+  if (!preservePinned) {
+    semaiChatViewPinned = false;
+  }
   const bodies = document.querySelectorAll('[aria-label="Message body"]:not([contenteditable])');
   semaiAutoOpenSuppressedSignature = Array.from(bodies).map(b => b.dataset.semaiSigStripped || "").join("|");
   semaiUpdateChatToggleBtn();
@@ -2631,11 +2849,14 @@ function semaiUpdateChatToggleVisibility() {
 // Auto-deactivate when Outlook navigates to a different email
 let semaiLastReadingPaneSignature = "";
 function semaiWatchForNavigation() {
+  let checkTimer = null;
+
   const check = () => {
+    checkTimer = null;
     const bodies = document.querySelectorAll('[aria-label="Message body"]:not([contenteditable])');
     const sig = Array.from(bodies).map(b => b.dataset.semaiSigStripped || "").join("|");
     if (semaiChatViewActive && sig !== semaiLastReadingPaneSignature) {
-      semaiDeactivateChatView();
+      semaiDeactivateChatView(true);
     }
     if (sig !== semaiLastReadingPaneSignature) {
       semaiAutoOpenSuppressedSignature = "";
@@ -2643,19 +2864,26 @@ function semaiWatchForNavigation() {
     semaiLastReadingPaneSignature = sig;
     semaiUpdateChatToggleVisibility();
     if (
+      semaiChatViewPinned &&
       !semaiChatViewActive &&
       !semaiChatViewActivationInProgress &&
       !semaiCalibrationState &&
       semaiGetCalibration()?.senderSelector &&
       bodies.length >= 2 &&
-      sig &&
-      sig !== semaiAutoOpenSuppressedSignature
+      sig
     ) {
       semaiActivateChatView();
     }
   };
 
-  const obs = new MutationObserver(check);
+  const scheduleCheck = () => {
+    if (checkTimer) {
+      window.clearTimeout(checkTimer);
+    }
+    checkTimer = window.setTimeout(check, 180);
+  };
+
+  const obs = new MutationObserver(scheduleCheck);
   obs.observe(document.body, { childList: true, subtree: true });
   check();
 }
@@ -2692,25 +2920,7 @@ function setupWhenReady() {
     if (panel) semaiEnsurePanelVisible(panel, false);
   });
 
-  if (!semaiGetCalibration()) {
-    window.setTimeout(() => {
-      if (!semaiGetCalibration() && !semaiCalibrationState) {
-        semaiStartCalibration();
-      }
-    }, 1200);
-  }
-
-  const observer = new MutationObserver(() => {
-    if (!document.getElementById("semai-panel")) {
-      semaiLog("[semai] Panel missing, recreating");
-      createPanel();
-    }
-  });
-
-  observer.observe(document.documentElement, {
-    childList: true,
-    subtree: true
-  });
+  // First-run modal is shown by createPanel() when calibration is missing.
 }
 
 if (document.readyState === "loading") {

@@ -7,9 +7,8 @@
 // SEMAI_OPENAI_API_KEY is defined in secrets.js, which is loaded before this file.
 const SEMAI_MODEL = "gpt-4.1-mini"; // or any other chat-capable model id
 
-// Your display name as it appears in Outlook's sender field.
-// Used by chat view to identify which messages are yours.
-const SEMAI_USER_NAME = "Santiago Arconada Alvarez";
+// Leave empty — Remou detects your identity automatically on first setup
+const SEMAI_USER_NAME = "";
 
 // Style presets for semai
 const SEMAI_PRESETS = {

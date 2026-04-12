@@ -539,6 +539,12 @@ body.semai-calibrating * {
   transform: translateY(-1px);
 }
 
+.semai-original-message-report-missed {
+  background: rgba(245, 158, 11, 0.08) !important;
+  box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.95), 0 0 0 8px rgba(245, 158, 11, 0.14);
+  border-radius: 10px;
+}
+
 .semai-report-popover {
   position: fixed;
   z-index: 1000001;
@@ -919,4 +925,91 @@ body.semai-calibrating * {
   width: 100%;
   pointer-events: none;
   flex-shrink: 0;
+}
+
+/* ===== Onboarding modal ===== */
+#semai-onboarding-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 999999;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Text",
+    "Segoe UI", sans-serif;
+}
+
+.semai-onboarding-card {
+  background: #ffffff;
+  border-radius: 16px;
+  padding: 32px;
+  max-width: 460px;
+  width: calc(100vw - 48px);
+  box-shadow: 0 24px 60px rgba(15, 23, 42, 0.28), 0 4px 16px rgba(15, 23, 42, 0.12);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.semai-onboarding-logo {
+  display: flex;
+  align-items: center;
+  margin-bottom: 4px;
+}
+
+.semai-onboarding-headline {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 700;
+  color: #0f172a;
+  line-height: 1.3;
+}
+
+.semai-onboarding-body {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.55;
+  color: #334155;
+}
+
+.semai-onboarding-steps {
+  margin: 0;
+  padding-left: 20px;
+  font-size: 14px;
+  line-height: 1.65;
+  color: #334155;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.semai-onboarding-cta {
+  width: 100%;
+  padding: 12px;
+  border: none;
+  border-radius: 10px;
+  background: #7c3aed;
+  color: #ffffff;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  margin-top: 4px;
+  transition: filter 0.15s ease, transform 0.08s ease;
+}
+
+.semai-onboarding-cta:hover {
+  filter: brightness(1.08);
+}
+
+.semai-onboarding-cta:active {
+  transform: translateY(1px);
+  filter: brightness(0.96);
+}
+
+.semai-onboarding-note {
+  margin: 0;
+  font-size: 12px;
+  color: #94a3b8;
+  text-align: center;
 }
