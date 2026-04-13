@@ -552,11 +552,25 @@ function runDetection() {
 
   try {
     const senderTokens = parseSenderInput(senderRaw);
+
+    // If the paste is a full Outlook page view (contains data-semai-original-html or
+    // a known body element), extract just the email body so the detector gets the
+    // right input — identical to what the extension does on the live page.
+    let originalHtml = html;
+    const _tmpParse = document.createElement("div");
+    _tmpParse.innerHTML = html;
+    const _bodyCandidate = _tmpParse.querySelector("[data-semai-original-html]")
+                        || _tmpParse.querySelector(".OuGoX");
+    if (_bodyCandidate) {
+      originalHtml = _bodyCandidate.dataset.semaiOriginalHtml || _bodyCandidate.innerHTML;
+      semaiNativeLog(`[playground] Full page paste detected — extracted body (${originalHtml.length} chars)`);
+    }
+
     const bodyEl = document.createElement("div");
-    bodyEl.dataset.semaiOriginalHtml = html;
+    bodyEl.dataset.semaiOriginalHtml = originalHtml;
     const cleanedHtml = semaiCleanBodyClone(bodyEl, senderTokens);
 
-    renderPanes(html, cleanedHtml);
+    renderPanes(originalHtml, cleanedHtml);
 
     const senderDesc = senderTokens
       ? (Array.isArray(senderTokens) ? JSON.stringify(senderTokens) : `"${senderTokens}"`)

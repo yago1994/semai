@@ -877,6 +877,7 @@ let semaiReportHoverRow = null;
 let semaiReportModeOverlay = null;
 let semaiReportPopoverEl = null;
 let semaiReportMissedBodies = [];
+let semaiReportHoverOriginalBody = null;
 
 // Deterministic avatar colour from name — 8-colour palette
 const SEMAI_AVATAR_COLORS = [
@@ -1494,6 +1495,11 @@ function semaiClearReportHover() {
     semaiReportHoverRow.classList.remove("semai-chat-row-report-hover");
     semaiReportHoverRow = null;
   }
+
+  if (semaiReportHoverOriginalBody) {
+    semaiReportHoverOriginalBody.classList.remove("semai-original-message-report-hover");
+    semaiReportHoverOriginalBody = null;
+  }
 }
 
 function semaiClearMissedOriginalHighlights() {
@@ -1829,6 +1835,16 @@ function semaiGetReportRowFromEventTarget(target) {
   return target.closest(".semai-chat-row[data-report-index]");
 }
 
+function semaiGetOriginalReportBodyFromEventTarget(target) {
+  if (!(target instanceof Element) || semaiIsInsideRemouUi(target)) return null;
+  return target.closest('[aria-label="Message body"]:not([contenteditable])');
+}
+
+function semaiGetMessageForOriginalBody(overlay, bodyEl) {
+  const messages = overlay?._semaiMessages || [];
+  return messages.find((message) => message.sourceBodyEl === bodyEl) || null;
+}
+
 function semaiHandleReportRowHover(event) {
   if (!semaiReportModeOverlay || semaiReportModeOverlay.dataset.reportMode !== "active") {
     semaiClearReportHover();
@@ -1843,6 +1859,32 @@ function semaiHandleReportRowHover(event) {
 
   semaiReportHoverRow = row;
   semaiReportHoverRow.classList.add("semai-chat-row-report-hover");
+}
+
+function semaiHandleOriginalReportHover(event) {
+  const overlay = semaiReportModeOverlay;
+  if (!overlay || overlay.dataset.reportMode !== "active" || overlay.dataset.viewMode !== "real") {
+    if (semaiReportHoverOriginalBody) {
+      semaiReportHoverOriginalBody.classList.remove("semai-original-message-report-hover");
+      semaiReportHoverOriginalBody = null;
+    }
+    return;
+  }
+
+  const bodyEl = semaiGetOriginalReportBodyFromEventTarget(event.target);
+  const message = bodyEl ? semaiGetMessageForOriginalBody(overlay, bodyEl) : null;
+  const nextBody = message?.sourceBodyEl || null;
+
+  if (nextBody === semaiReportHoverOriginalBody) return;
+
+  if (semaiReportHoverOriginalBody) {
+    semaiReportHoverOriginalBody.classList.remove("semai-original-message-report-hover");
+  }
+
+  semaiReportHoverOriginalBody = nextBody;
+  if (semaiReportHoverOriginalBody) {
+    semaiReportHoverOriginalBody.classList.add("semai-original-message-report-hover");
+  }
 }
 
 async function semaiHandleReportRowClick(event) {
@@ -1861,6 +1903,23 @@ async function semaiHandleReportRowClick(event) {
   if (!message) return;
 
   semaiOpenReportPopover(overlay, message, subject, event.clientX, event.clientY, row);
+}
+
+function semaiHandleOriginalReportClick(event) {
+  const overlay = semaiReportModeOverlay;
+  if (!overlay || overlay.dataset.reportMode !== "active" || overlay.dataset.viewMode !== "real") return;
+
+  const bodyEl = semaiGetOriginalReportBodyFromEventTarget(event.target);
+  if (!bodyEl) return;
+
+  const message = semaiGetMessageForOriginalBody(overlay, bodyEl);
+  if (!message) return;
+
+  event.preventDefault();
+  event.stopPropagation();
+
+  const subject = overlay._semaiSubject || "Conversation";
+  semaiOpenReportPopover(overlay, message, subject, event.clientX, event.clientY, bodyEl);
 }
 
 function semaiGetCalibration() {
@@ -2914,6 +2973,8 @@ function setupWhenReady() {
   semaiObserveReadingBodies();
   semaiGetCurrentUser();
   semaiWatchForNavigation();
+  document.addEventListener("mousemove", semaiHandleOriginalReportHover, true);
+  document.addEventListener("click", semaiHandleOriginalReportClick, true);
   document.addEventListener("selectionchange", semaiSaveSelectionFromCompose);
   window.addEventListener("resize", () => {
     const panel = document.getElementById("semai-panel");
