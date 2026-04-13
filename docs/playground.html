@@ -98,9 +98,14 @@
     color: #374151;
     background: #fafafa;
     transition: border-color 0.15s;
-    margin-bottom: 12px;
+    margin-bottom: 6px;
   }
   textarea#htmlInput:focus { border-color: #7c3aed; background: #fff; box-shadow: 0 0 0 2px #ede9fe; }
+  .textarea-actions {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 12px;
+  }
 
   .btn-row { display: flex; gap: 10px; flex-wrap: wrap; }
   button {
@@ -309,6 +314,10 @@
   <div class="input-panel">
     <h2>Manual Test</h2>
     <textarea id="htmlInput" placeholder="Paste raw Outlook email HTML here…"></textarea>
+    <div class="textarea-actions">
+      <button class="btn-small" onclick="copyHtml()">Copy</button>
+      <button class="btn-small" onclick="formatHtml()">Format</button>
+    </div>
     <div class="input-row">
       <div class="input-group">
         <label>Sender Name</label>
@@ -461,6 +470,47 @@ function buildIframeSrcdoc(bodyHtml) {
   mark { border-radius: 2px; padding: 0 1px; }
 </style>
 </head><body>${bodyHtml}</body></html>`;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Copy / Format HTML textarea
+// ─────────────────────────────────────────────────────────────────────────────
+
+function copyHtml() {
+  const ta = document.getElementById("htmlInput");
+  if (!ta.value.trim()) return;
+  navigator.clipboard.writeText(ta.value).then(() => {
+    const btn = event.target;
+    const orig = btn.textContent;
+    btn.textContent = "Copied!";
+    setTimeout(() => { btn.textContent = orig; }, 1200);
+  });
+}
+
+function formatHtml() {
+  const ta = document.getElementById("htmlInput");
+  const raw = ta.value.trim();
+  if (!raw) return;
+
+  const VOID = new Set(["area","base","br","col","embed","hr","img","input","link","meta","param","source","track","wbr"]);
+  let indent = 0;
+  const lines = raw
+    .replace(/>\s+</g, "><")
+    .replace(/(<[^>]+>)/g, "\n$1\n")
+    .split("\n")
+    .map(s => s.trim())
+    .filter(Boolean);
+
+  const out = lines.map(line => {
+    const isClose = /^<\//.test(line);
+    const isSelfClose = /\/>$/.test(line) || (() => { const m = line.match(/^<(\w+)/); return m && VOID.has(m[1].toLowerCase()); })();
+    if (isClose) indent = Math.max(0, indent - 1);
+    const result = "  ".repeat(indent) + line;
+    if (!isClose && !isSelfClose && /^<\w/.test(line)) indent++;
+    return result;
+  });
+
+  ta.value = out.join("\n");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
