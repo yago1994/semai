@@ -679,7 +679,9 @@ function semaiFindSenderAnchor(body, senderName) {
       }
     }
 
-    // Pattern B: name element immediately preceded by a closing sibling
+    // Pattern B: name element immediately preceded by a closing sibling,
+    // OR name element followed by a contact block (nickname sign-off pattern,
+    // e.g. "Chuck" before "Charles Raison, MD | Professor | University...").
     if (lines.length === 1) {
       const words = raw.split(/\s+/);
       const isShortName = words.length >= 1 && words.length <= 3 && raw.length <= 30 && words.every(w => /^[A-Z]/.test(w));
@@ -688,6 +690,21 @@ function semaiFindSenderAnchor(body, senderName) {
         const prevRaw = (kids[i - 1].innerText || kids[i - 1].textContent || "").trim();
         if (SEMAI_CLOSING_RE.test(prevRaw)) {
           return i + 1 < kids.length ? kids[i + 1] : null;
+        }
+        // Pattern B': name sign-off directly before a contact block (skip empty spacers).
+        // Handles nickname sign-offs like "Chuck" before "Charles Raison, MD ..." block.
+        if (senderName) {
+          for (let j = i + 1; j < Math.min(kids.length, i + 4); j++) {
+            const jRaw = (kids[j].innerText || kids[j].textContent || "").trim();
+            if (!jRaw) continue; // skip &nbsp; / empty spacer lines
+            const hasSignals = semaiCountContactSignals(jRaw, kids[j]) >= 2;
+            const hasProfessional = SEMAI_CREDENTIALS_RE.test(jRaw) || SEMAI_SIGNATURE_TITLE_RE.test(jRaw);
+            if (hasSignals && hasProfessional) {
+              semaiNativeLog(`[semai-sig] PatternB' (nickname sign-off): raw="${raw}" → contact block found, collapsing from name element`);
+              return kids[i];
+            }
+            break; // stop at first non-empty block that doesn't qualify
+          }
         }
       }
     }
@@ -957,10 +974,20 @@ function semaiCleanBodyClone(bodyEl, senderFirstName) {
   // 0. Remove Outlook "external sender" warning banners
   clone.querySelectorAll('a[href*="LearnAboutSenderIdentification"]').forEach(a => {
     let el = a;
+    let trAncestor = null;
     while (el && el !== clone) {
       const tag = el.tagName;
+      if (tag === "TR" && !trAncestor) trAncestor = el;
       if (tag === "TABLE" || (tag === "DIV" && el.parentElement !== clone)) {
-        el.remove();
+        // Guard: only remove the whole element if it's small (clearly a banner, not main content).
+        // A warning banner is typically < 500 chars; a main content table wrapping the whole email is much larger.
+        if (el.textContent.trim().length < 500) {
+          el.remove();
+        } else if (trAncestor) {
+          // Remove just the banner row to avoid nuking the main content table.
+          trAncestor.remove();
+        }
+        // else: deeply nested with no TR — skip to avoid destroying content
         break;
       }
       el = el.parentElement;
@@ -1102,11 +1129,22 @@ function semaiStripQuotedReplyHeaders(container) {
     const headerLines = lines.filter((line) => HEADER_LINE_RE.test(line));
 
     if (headerLines.length >= 2 || HEADER_PAIR_RE.test(blockText)) {
+      // Guard: skip large blocks where headers are buried deep inside (body container
+      // that merely contains a quoted reply or signature somewhere inside it).
+      // A genuine quoted-reply header block is either small, or has headers near the top.
+      if (blockText.length > 400) {
+        const firstHeaderIdx = lines.findIndex((line) => HEADER_LINE_RE.test(line));
+        if (firstHeaderIdx > 4) continue;
+      }
       removeFromAndAfter(block);
       return;
     }
 
     if (WROTE_LINE_RE.test(blockText)) {
+      if (blockText.length > 400) {
+        const firstWroteIdx = lines.findIndex((line) => WROTE_LINE_RE.test(line));
+        if (firstWroteIdx > 4) continue;
+      }
       removeFromAndAfter(block);
       return;
     }
