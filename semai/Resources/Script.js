@@ -37,7 +37,7 @@ function setReportIssueStatus(message, tone = "neutral") {
 function setReportIssueBusy(isBusy) {
     reportIssueButton.disabled = isBusy;
     reportIssueInput.disabled = isBusy;
-    reportIssueButton.textContent = isBusy ? "Reporting…" : "Report an issue";
+    reportIssueButton.textContent = isBusy ? "Submitting…" : "Submit";
 }
 
 function submitReportIssue() {
