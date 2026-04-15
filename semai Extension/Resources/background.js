@@ -7,10 +7,12 @@ const PATCH_MANIFEST_URL =
   'https://yago1994.github.io/semai/patches/patches.json';
 
 const STORAGE_KEY = 'semai_patches_cache';
+const ANALYTICS_INSTALL_ID_KEY = 'semai_install_id';
 const ALARM_NAME = 'semai_patch_fetch';
 const FETCH_INTERVAL_MINUTES = 60;
 const MAX_PATCH_BYTES = 50 * 1024; // 50 KB per patch
 const EXTENSION_VERSION = chrome.runtime.getManifest().version;
+const ANALYTICS_URL = 'https://script.google.com/macros/s/AKfycbxTfl5yMdqcHAmXjRmvGIBQ_ILMmR6XX7vyUolxjvR2h17f0cCbsUAFnEdqcw9GMNfL/exec';
 const PATCH_DEBUG = false;
 
 function semaiPatchDebug(...args) {
@@ -87,6 +89,38 @@ function semverSatisfies(required) {
   if (cMaj !== rMaj) return cMaj > rMaj;
   if (cMin !== rMin) return cMin > rMin;
   return cPat >= rPat;
+}
+
+async function semaiLoadOrCreateInstallID() {
+  const stored = await chrome.storage.local.get(ANALYTICS_INSTALL_ID_KEY);
+  const existing = stored?.[ANALYTICS_INSTALL_ID_KEY];
+  if (typeof existing === 'string' && existing.length > 0) {
+    return existing;
+  }
+
+  const installID = crypto.randomUUID();
+  await chrome.storage.local.set({ [ANALYTICS_INSTALL_ID_KEY]: installID });
+  return installID;
+}
+
+async function semaiTrackEvent(eventName, details = {}) {
+  try {
+    const payload = {
+      install_id: await semaiLoadOrCreateInstallID(),
+      extension_version: EXTENSION_VERSION,
+      platform: navigator.userAgent,
+      event: eventName,
+      ...details
+    };
+
+    await fetch(ANALYTICS_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+  } catch (error) {
+    semaiPatchDebug('[semai] Analytics event failed:', eventName, error?.message || error);
+  }
 }
 
 // ── Live fix preview — Claude API tool definition ────────────────────────────
@@ -190,6 +224,29 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       browser.runtime.sendNativeMessage('yam.team.remou', { log: msg.text });
     } catch { /* ignore */ }
     return false;
+  }
+
+  if (msg.type === 'OPEN_ONBOARDING_APP') {
+    browser.runtime.sendNativeMessage(
+      'yam.team.remou',
+      { command: 'open-onboarding-app' },
+      (response) => {
+        if (chrome.runtime.lastError) {
+          sendResponse({ ok: false, error: chrome.runtime.lastError.message });
+          return;
+        }
+
+        sendResponse(response && typeof response === 'object' ? response : { ok: true });
+      }
+    );
+    return true;
+  }
+
+  if (msg.type === 'TRACK_EVENT') {
+    semaiTrackEvent(msg.eventName, msg.details)
+      .then(() => sendResponse({ ok: true }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
   }
 
   // ── Patch injection (bypasses page CSP via chrome.scripting) ──

@@ -50,6 +50,12 @@
   gap: 6px;
 }
 
+.semai-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
 .semai-logo-dot {
   width: 10px;
   height: 10px;
@@ -66,7 +72,8 @@
   color: #0f172a;
 }
 
-/* Collapse/expand button */
+/* Header action buttons */
+.semai-settings-btn,
 .semai-toggle-btn {
   border: none;
   background: transparent;
@@ -81,6 +88,11 @@
   transition: background 0.15s ease, color 0.15s ease;
 }
 
+.semai-settings-btn {
+  font-size: 12px;
+}
+
+.semai-settings-btn:hover,
 .semai-toggle-btn:hover {
   background: rgba(148, 163, 184, 0.16);
   color: #374151;
@@ -947,6 +959,7 @@ body.semai-calibrating * {
 }
 
 .semai-onboarding-card {
+  position: relative;
   background: #ffffff;
   border-radius: 16px;
   padding: 32px;
@@ -956,6 +969,30 @@ body.semai-calibrating * {
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+.semai-onboarding-close {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: #64748b;
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.semai-onboarding-close:hover {
+  background: rgba(148, 163, 184, 0.16);
+  color: #0f172a;
 }
 
 .semai-onboarding-logo {

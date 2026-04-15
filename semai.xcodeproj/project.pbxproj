@@ -40,12 +40,12 @@
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
-		D4CFC31D2EC6EB280092F9EE /* Exceptions for "remou Extension" folder in "remou Extension" target */ = {
+		D4CFC31D2EC6EB280092F9EE /* Exceptions for "semai Extension" folder in "remou Extension" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Info.plist,
 			);
-			target = D4CFC3032EC6EB280092F9EE /* semai Extension */;
+			target = D4CFC3032EC6EB280092F9EE /* remou Extension */;
 		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
@@ -58,7 +58,7 @@
 		D4CFC3082EC6EB280092F9EE /* semai Extension */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
-				D4CFC31D2EC6EB280092F9EE /* Exceptions for "remou Extension" folder in "remou Extension" target */,
+				D4CFC31D2EC6EB280092F9EE /* Exceptions for "semai Extension" folder in "remou Extension" target */,
 			);
 			explicitFolders = (
 				Resources/_locales,
@@ -108,7 +108,7 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		D4CFC2E92EC6EB270092F9EE /* semai */ = {
+		D4CFC2E92EC6EB270092F9EE /* remou */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = D4CFC3242EC6EB280092F9EE /* Build configuration list for PBXNativeTarget "remou" */;
 			buildPhases = (
@@ -132,7 +132,7 @@
 			productReference = D4CFC2EA2EC6EB270092F9EE /* remou.app */;
 			productType = "com.apple.product-type.application";
 		};
-		D4CFC3032EC6EB280092F9EE /* semai Extension */ = {
+		D4CFC3032EC6EB280092F9EE /* remou Extension */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = D4CFC31E2EC6EB280092F9EE /* Build configuration list for PBXNativeTarget "remou Extension" */;
 			buildPhases = (
@@ -172,7 +172,7 @@
 					};
 				};
 			};
-			buildConfigurationList = D4CFC2E52EC6EB270092F9EE /* Build configuration list for PBXProject "remou" */;
+			buildConfigurationList = D4CFC2E52EC6EB270092F9EE /* Build configuration list for PBXProject "semai" */;
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
@@ -186,8 +186,8 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				D4CFC2E92EC6EB270092F9EE /* semai */,
-				D4CFC3032EC6EB280092F9EE /* semai Extension */,
+				D4CFC2E92EC6EB270092F9EE /* remou */,
+				D4CFC3032EC6EB280092F9EE /* remou Extension */,
 			);
 		};
 /* End PBXProject section */
@@ -229,7 +229,7 @@
 /* Begin PBXTargetDependency section */
 		D4CFC3072EC6EB280092F9EE /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
-			target = D4CFC3032EC6EB280092F9EE /* semai Extension */;
+			target = D4CFC3032EC6EB280092F9EE /* remou Extension */;
 			targetProxy = D4CFC3062EC6EB280092F9EE /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
@@ -432,7 +432,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 3;
 				DEVELOPMENT_TEAM = BN3HN7WZJJ;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -473,7 +473,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 3;
 				DEVELOPMENT_TEAM = BN3HN7WZJJ;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -510,7 +510,7 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		D4CFC2E52EC6EB270092F9EE /* Build configuration list for PBXProject "remou" */ = {
+		D4CFC2E52EC6EB270092F9EE /* Build configuration list for PBXProject "semai" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				D4CFC3212EC6EB280092F9EE /* Debug */,

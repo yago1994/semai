@@ -13,7 +13,8 @@
   "permissions": [
     "storage",
     "alarms",
-    "scripting"
+    "scripting",
+    "nativeMessaging"
   ],
   "content_scripts": [
     {
@@ -46,6 +47,8 @@
     "https://api.openai.com/*",
     "https://api.github.com/*",
     "https://yago1994.github.io/*",
-    "https://api.anthropic.com/*"
+    "https://api.anthropic.com/*",
+    "https://script.google.com/*",
+    "https://script.googleusercontent.com/*"
   ]
 }

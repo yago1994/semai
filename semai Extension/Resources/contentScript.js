@@ -208,7 +208,25 @@ async function semaiEnsureReplyAllMode(timeoutMs = 2500) {
   return false;
 }
 
-function semaiFindSendButton() {
+function semaiGetComposeContainer(composeEl) {
+  if (!(composeEl instanceof Element)) return null;
+
+  const ancestors = [];
+  let current = composeEl;
+  while (current instanceof Element) {
+    ancestors.push(current);
+    current = current.parentElement;
+  }
+
+  return ancestors.find((el) => (
+    el.matches?.('[data-app-section="MailCompose"]') ||
+    el.querySelector?.(
+      'button[aria-label="Send"], [role="button"][aria-label="Send"], button[title="Send"], [role="button"][title="Send"]'
+    )
+  )) || composeEl.parentElement || null;
+}
+
+function semaiFindSendButton(scopeEl = document) {
   const selector = [
     'button[aria-label="Send"]',
     '[role="button"][aria-label="Send"]',
@@ -222,8 +240,10 @@ function semaiFindSendButton() {
     '[name*="send" i]'
   ].join(", ");
 
-  const matches = Array.from(document.querySelectorAll(selector))
+  const root = scopeEl instanceof Element || scopeEl instanceof Document ? scopeEl : document;
+  const matches = Array.from(root.querySelectorAll(selector))
     .filter(semaiIsVisibleElement)
+    .filter((el) => !semaiIsInsideRemouUi(el))
     .filter((el) => {
       const label = el.getAttribute("aria-label") || "";
       const title = el.getAttribute("title") || "";
@@ -232,8 +252,9 @@ function semaiFindSendButton() {
 
   if (matches.length > 0) return matches[matches.length - 1];
 
-  const textMatches = Array.from(document.querySelectorAll('button, [role="button"]'))
+  const textMatches = Array.from(root.querySelectorAll('button, [role="button"]'))
     .filter(semaiIsVisibleElement)
+    .filter((el) => !semaiIsInsideRemouUi(el))
     .filter((el) => /^send$/i.test((el.getAttribute("aria-label") || el.textContent || "").trim()));
 
   return textMatches[textMatches.length - 1] || null;
@@ -254,6 +275,42 @@ function semaiTriggerComposeSend(composeEl) {
 
   composeEl.dispatchEvent(new KeyboardEvent("keydown", keyOptions));
   composeEl.dispatchEvent(new KeyboardEvent("keyup", keyOptions));
+}
+
+function semaiComposeIsStillActive(composeEl) {
+  return composeEl instanceof HTMLElement && composeEl.isConnected && semaiLooksLikeComposeElement(composeEl);
+}
+
+async function semaiWaitForComposeToClose(composeEl, timeoutMs = 5000) {
+  const startedAt = Date.now();
+
+  while (Date.now() - startedAt < timeoutMs) {
+    if (!semaiComposeIsStillActive(composeEl)) {
+      return true;
+    }
+    await new Promise((resolve) => window.setTimeout(resolve, 120));
+  }
+
+  return !semaiComposeIsStillActive(composeEl);
+}
+
+async function semaiSendCompose(composeEl) {
+  const composeContainer = semaiGetComposeContainer(composeEl);
+  const sendButton = semaiFindSendButton(composeContainer || composeEl.ownerDocument || document);
+
+  if (sendButton) {
+    semaiActivateElement(sendButton);
+    if (await semaiWaitForComposeToClose(composeEl, 4000)) {
+      return;
+    }
+  }
+
+  semaiTriggerComposeSend(composeEl);
+  if (await semaiWaitForComposeToClose(composeEl, 4000)) {
+    return;
+  }
+
+  throw new Error("Reply all draft opened, but Outlook did not send it.");
 }
 
 async function semaiOpenReplyAllCompose() {
@@ -353,13 +410,7 @@ async function semaiSendReplyAllFromChat() {
   try {
     const composeEl = await semaiOpenReplyAllCompose();
     semaiInsertComposeText(composeEl, draft);
-
-    const sendButton = semaiFindSendButton();
-    if (sendButton) {
-      sendButton.click();
-    } else {
-      semaiTriggerComposeSend(composeEl);
-    }
+    await semaiSendCompose(composeEl);
 
     if (status) status.textContent = "Reply all sent.";
     if (input) input.value = "";
@@ -369,6 +420,32 @@ async function semaiSendReplyAllFromChat() {
     if (draftBtn) draftBtn.disabled = false;
     if (sendBtn) sendBtn.disabled = false;
   }
+}
+
+function semaiOpenOnboardingAppWindow() {
+  return new Promise((resolve, reject) => {
+    chrome.runtime.sendMessage({ type: "OPEN_ONBOARDING_APP" }, (response) => {
+      if (chrome.runtime.lastError) {
+        reject(new Error(chrome.runtime.lastError.message));
+        return;
+      }
+
+      if (!response?.ok) {
+        reject(new Error(response?.error || "Could not open the Remou app."));
+        return;
+      }
+
+      resolve();
+    });
+  });
+}
+
+function semaiTrackEvent(eventName, details = {}) {
+  chrome.runtime.sendMessage({ type: "TRACK_EVENT", eventName, details }, () => {
+    if (chrome.runtime.lastError) {
+      console.error("[semai] Failed to track event", eventName, chrome.runtime.lastError.message);
+    }
+  });
 }
 
 const SEMAI_DEBUG = false;
@@ -751,13 +828,23 @@ function createPanel() {
         <div class="semai-logo-dot"></div>
         <div class="semai-title">REMOU</div>
       </div>
-      <button
-        class="semai-toggle-btn"
-        type="button"
-        aria-label="Collapse REMOU"
-      >
-        ▴
-      </button>
+      <div class="semai-header-actions">
+        <button
+          class="semai-settings-btn"
+          type="button"
+          aria-label="Open Remou setup"
+          title="Open Remou setup"
+        >
+          ⚙
+        </button>
+        <button
+          class="semai-toggle-btn"
+          type="button"
+          aria-label="Collapse REMOU"
+        >
+          ▴
+        </button>
+      </div>
     </div>
     <div class="semai-body">
       <button class="semai-chat-toggle-btn" type="button" style="display:none">Turn on chat view</button>
@@ -795,6 +882,14 @@ function createPanel() {
     const target = e.target;
     if (!(target instanceof HTMLButtonElement)) return;
 
+    if (target.classList.contains("semai-settings-btn")) {
+      semaiOpenOnboardingAppWindow().catch((error) => {
+        console.error("[semai] Failed to open onboarding app", error);
+        semaiShowOnboardingModal();
+      });
+      return;
+    }
+
     // Handle collapse/expand toggle
     if (target.classList.contains("semai-toggle-btn")) {
       toggleSemaiPanel();
@@ -813,7 +908,7 @@ function createPanel() {
     }
 
     if (target.classList.contains("semai-calibrate-btn")) {
-      semaiStartCalibration();
+      semaiShowOnboardingModal();
       return;
     }
 
@@ -2082,6 +2177,13 @@ function semaiStartCalibration() {
 
 // ===== ONBOARDING MODAL =====
 
+function semaiHandleOnboardingKeydown(event) {
+  if (event.key !== "Escape") return;
+
+  event.preventDefault();
+  semaiDismissOnboardingModal();
+}
+
 function semaiShowOnboardingModal() {
   if (document.getElementById("semai-onboarding-modal")) return;
 
@@ -2089,6 +2191,15 @@ function semaiShowOnboardingModal() {
   modal.id = "semai-onboarding-modal";
   modal.innerHTML = `
     <div class="semai-onboarding-card">
+      <button
+        class="semai-onboarding-close"
+        type="button"
+        id="semai-onboarding-close-btn"
+        aria-label="Close setup"
+        title="Close"
+      >
+        ×
+      </button>
       <div class="semai-onboarding-logo">
         <div class="semai-logo-dot" style="width:14px;height:14px;margin-right:8px;flex-shrink:0;"></div>
         <span style="font-size:14px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#0f172a;">Remou</span>
@@ -2110,17 +2221,27 @@ function semaiShowOnboardingModal() {
     </div>
   `;
 
+  modal.addEventListener("click", (event) => {
+    if (event.target === modal) {
+      semaiDismissOnboardingModal();
+    }
+  });
+  modal.querySelector("#semai-onboarding-close-btn").addEventListener("click", () => {
+    semaiDismissOnboardingModal();
+  });
   modal.querySelector("#semai-onboarding-cta-btn").addEventListener("click", () => {
     semaiDismissOnboardingModal();
     semaiStartCalibration();
   });
 
   document.body.appendChild(modal);
+  document.addEventListener("keydown", semaiHandleOnboardingKeydown, true);
 }
 
 function semaiDismissOnboardingModal() {
   const modal = document.getElementById("semai-onboarding-modal");
   if (modal) modal.remove();
+  document.removeEventListener("keydown", semaiHandleOnboardingKeydown, true);
 }
 
 function semaiNodePrecedesBody(node, bodyEl) {
@@ -2827,6 +2948,10 @@ function semaiActivateChatView() {
 
     semaiChatViewActive = true;
     semaiUpdateChatToggleBtn();
+    semaiTrackEvent("chat_on", {
+      page_url: window.location.href,
+      message_count: messages.length
+    });
 
     // Contain the overlay within the reading pane
     const readingPane = semaiGetReadingPane();
@@ -2882,6 +3007,9 @@ function semaiDeactivateChatView(preservePinned = false) {
   const bodies = document.querySelectorAll('[aria-label="Message body"]:not([contenteditable])');
   semaiAutoOpenSuppressedSignature = Array.from(bodies).map(b => b.dataset.semaiSigStripped || "").join("|");
   semaiUpdateChatToggleBtn();
+  semaiTrackEvent("chat_off", {
+    page_url: window.location.href
+  });
   semaiLog("[semai] Chat view deactivated");
 }
 
