@@ -337,29 +337,39 @@ async function semaiOpenReplyAllCompose() {
   return composeEl;
 }
 
-function semaiInsertComposeText(composeEl, text) {
+async function semaiInsertComposeText(composeEl, text) {
+  // Outlook's React editor initialises its internal state asynchronously after the
+  // contenteditable element appears in the DOM. If we write content before that
+  // completes, React resets the compose area and wipes our text. A short pause here
+  // lets the framework settle before we touch the editor.
+  await new Promise(resolve => window.setTimeout(resolve, 300));
+
   composeEl.focus();
 
-  const lines = text.split(/\n/);
-  const fragment = document.createDocumentFragment();
+  // execCommand('selectAll') uses the browser's own editor selection mechanism,
+  // which stays in sync with execCommand('insertText'). This is more reliable than
+  // building a Range manually — both commands go through the same beforeinput → input
+  // pipeline that Outlook listens to for keeping its internal model up to date.
+  document.execCommand("selectAll", false, null);
+  const inserted = document.execCommand("insertText", false, text);
 
-  lines.forEach((line, index) => {
-    const block = document.createElement("div");
-    if (line) {
-      block.textContent = line;
-    } else {
-      block.appendChild(document.createElement("br"));
-    }
-    fragment.appendChild(block);
-
-    if (index === lines.length - 1 && !line) {
-      block.appendChild(document.createElement("br"));
-    }
-  });
-
-  composeEl.innerHTML = "";
-  composeEl.appendChild(fragment);
-  composeEl.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: text }));
+  if (!inserted) {
+    // Fallback: direct DOM manipulation when execCommand is unavailable.
+    const lines = text.split(/\n/);
+    const fragment = document.createDocumentFragment();
+    lines.forEach((line) => {
+      const block = document.createElement("div");
+      if (line) {
+        block.textContent = line;
+      } else {
+        block.appendChild(document.createElement("br"));
+      }
+      fragment.appendChild(block);
+    });
+    composeEl.innerHTML = "";
+    composeEl.appendChild(fragment);
+    composeEl.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: text }));
+  }
 }
 
 async function semaiDraftReplyAllFromChat() {
@@ -380,7 +390,7 @@ async function semaiDraftReplyAllFromChat() {
 
   try {
     const composeEl = await semaiOpenReplyAllCompose();
-    semaiInsertComposeText(composeEl, draft);
+    await semaiInsertComposeText(composeEl, draft);
 
     if (status) status.textContent = "Reply all draft inserted into Outlook.";
   } catch (err) {
@@ -409,7 +419,9 @@ async function semaiSendReplyAllFromChat() {
 
   try {
     const composeEl = await semaiOpenReplyAllCompose();
-    semaiInsertComposeText(composeEl, draft);
+    await semaiInsertComposeText(composeEl, draft);
+    // Brief pause so Outlook processes the input event before the Send button is clicked.
+    await new Promise(resolve => window.setTimeout(resolve, 100));
     await semaiSendCompose(composeEl);
 
     if (status) status.textContent = "Reply all sent.";
@@ -2266,6 +2278,17 @@ function semaiPickClosestPrecedingMatch(container, bodyEl, selectors) {
   return matches[matches.length - 1];
 }
 
+// Returns the full text content of an element, including text inside CSS-hidden child
+// nodes (e.g. mark.js search-highlight spans). Unlike innerText, textContent is not
+// affected by display/visibility styles, so highlighted words are never silently dropped.
+function semaiFullText(el) {
+  // textContent always includes text from every descendant node regardless of CSS
+  // visibility, so highlighted search-term spans (mark.js) are never silently dropped.
+  // We only trim edges; internal newlines are preserved so semaiNormalizeSenderLabel
+  // can still split and filter lines correctly (e.g. avatar initials vs real name).
+  return (el?.textContent || el?.innerText || "").trim();
+}
+
 function semaiGetSenderLabelNearBody(bodyEl) {
   const bodyContainer = bodyEl.closest('[data-test-id="mailMessageBodyContainer"]');
   if (!bodyContainer || !bodyContainer.parentElement) return null;
@@ -2275,29 +2298,29 @@ function semaiGetSenderLabelNearBody(bodyEl) {
   while (sibling) {
     if (calibration?.senderSelector) {
       if (sibling.matches?.(calibration.senderSelector)) {
-        const text = (sibling.innerText || sibling.textContent || "").trim();
+        const text = semaiFullText(sibling);
         if (semaiLooksLikeSenderName(text)) return text;
       }
 
       const calibratedLabel = sibling.querySelector?.(calibration.senderSelector);
       if (calibratedLabel) {
-        const text = (calibratedLabel.innerText || calibratedLabel.textContent || "").trim();
+        const text = semaiFullText(calibratedLabel);
         if (semaiLooksLikeSenderName(text)) return text;
       }
     }
 
     if (sibling.matches(".OZZZK")) {
-      const text = (sibling.innerText || sibling.textContent || "").trim();
+      const text = semaiFullText(sibling);
       if (semaiLooksLikeSenderName(text)) return text;
     }
 
     const directLabel = sibling.querySelector?.(".OZZZK");
     if (directLabel) {
-      const text = (directLabel.innerText || directLabel.textContent || "").trim();
+      const text = semaiFullText(directLabel);
       if (semaiLooksLikeSenderName(text)) return text;
     }
 
-    const text = (sibling.innerText || sibling.textContent || "").trim();
+    const text = semaiFullText(sibling);
     if (text && text.length <= 120 && semaiLooksLikeSenderName(text)) {
       return text;
     }
@@ -2333,6 +2356,8 @@ function semaiNormalizeSenderLabel(rawLabel) {
     if (!cleanedLine) continue;
     if (!/[A-Za-z]/.test(cleanedLine)) continue;
     if (cleanedLine.length > 80) continue;
+    // Skip Outlook persona avatar initials (e.g. "AA", "SA") — all-caps 2–4 chars
+    if (/^[A-Z]{2,4}$/.test(cleanedLine)) continue;
 
     name = cleanedLine;
     break;
@@ -2470,7 +2495,21 @@ function semaiGetMessageSender(bodyEl) {
     if (name === "Unknown") {
       const found = semaiPickClosestPrecedingMatch(ancestor, bodyEl, nameSelectors);
       if (found) {
-        const raw = (found.getAttribute("aria-label") || found.innerText || found.textContent || "").trim();
+        // Outlook search highlighting strips the matched word from aria-label while
+        // innerText still includes the full visible name. Compare both and use whichever
+        // normalizes to a more complete (longer) name.
+        const ariaLabel = (found.getAttribute("aria-label") || "").trim();
+        // semaiFullText uses textContent so highlighted search-term spans (mark.js)
+        // are always included, even when CSS excludes them from innerText.
+        const fullText = semaiFullText(found);
+        let raw;
+        if (ariaLabel && fullText) {
+          const fromAria = semaiNormalizeSenderLabel(ariaLabel);
+          const fromText = semaiNormalizeSenderLabel(fullText);
+          raw = fromText.name.length > fromAria.name.length ? fullText : ariaLabel;
+        } else {
+          raw = ariaLabel || fullText;
+        }
         const normalized = semaiNormalizeSenderLabel(raw);
         if (normalized.name.length >= 2 && semaiLooksLikeSenderName(normalized.name)) {
           name = normalized.name;
@@ -2620,12 +2659,19 @@ function semaiIsCurrentUser(senderName, senderEmail) {
   // Exact full name match
   if (sLower === user.nameLower) return true;
 
-  // Last name match as fallback (Outlook sometimes shows "Lastname, Firstname")
+  // "Lastname(s), Firstname" format — handles both single and compound last names.
+  // e.g. "Alvarez, Santiago" or "Arconada Alvarez, Santiago" (Spanish compound surnames).
   const userParts = user.nameLower.split(/\s+/);
   if (userParts.length >= 2 && sLower.includes(",")) {
-    const userLast = userParts[userParts.length - 1];
+    const commaIdx = sLower.indexOf(",");
+    const beforeComma = sLower.substring(0, commaIdx).trim();
+    const afterComma = sLower.substring(commaIdx + 1).trim();
     const userFirst = userParts[0];
-    if (sLower.startsWith(userLast + ",") && sLower.includes(userFirst)) return true;
+    const userLastWords = userParts.slice(1);
+    if (
+      afterComma.split(/\s+/).includes(userFirst) &&
+      userLastWords.some(w => beforeComma.split(/\s+/).includes(w))
+    ) return true;
   }
 
   return false;
