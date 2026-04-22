@@ -176,6 +176,61 @@ function semaiTrimTrailingEmptyBlocks(container) {
   }
 }
 
+function semaiLooksLikeExternalSenderWarningText(text) {
+  const normalized = String(text || "").replace(/\s+/g, " ").trim().toLowerCase();
+  if (!normalized || normalized.length > 500) return false;
+
+  const hasBannerLabel = /(?:^|[\s:!])(?:caution|external e-?mail|external email|external sender|outside sender|outside of the organization|originated from outside(?: of)? the organization|externe e-?mail|achtung:\s*externe e-?mail)/i.test(normalized);
+  const hasCaution = /do not click links|open attachments|if you are not sure|content is safe|recognize the sender|trusted sender|klicken sie nicht auf links|öffnen sie keine anhänge|falls sie nicht sicher sind|absender vertrauenswürdig/i.test(normalized);
+  return hasBannerLabel && hasCaution;
+}
+
+function semaiRemoveExternalSenderWarnings(container) {
+  if (!(container instanceof HTMLElement)) return;
+
+  function pruneEmptyAncestors(startEl) {
+    let current = startEl;
+    while (current && current !== container) {
+      if (!semaiIsVisuallyEmptyElement(current)) break;
+      const parent = current.parentElement;
+      current.remove();
+      current = parent;
+    }
+  }
+
+  function removeBannerAnchor(startEl) {
+    let el = startEl;
+    let trAncestor = null;
+    while (el && el !== container) {
+      const tag = el.tagName;
+      if (tag === "TR" && !trAncestor) trAncestor = el;
+      if (tag === "TABLE" || (tag === "DIV" && el.parentElement !== container)) {
+        const textLen = (el.textContent || "").replace(/\s+/g, " ").trim().length;
+        if (textLen < 500) {
+          const parent = el.parentElement;
+          el.remove();
+          pruneEmptyAncestors(parent);
+        } else if (trAncestor) {
+          const parent = trAncestor.parentElement;
+          trAncestor.remove();
+          pruneEmptyAncestors(parent);
+        }
+        break;
+      }
+      el = el.parentElement;
+    }
+  }
+
+  container.querySelectorAll('a[href*="LearnAboutSenderIdentification"]').forEach(removeBannerAnchor);
+
+  const candidates = Array.from(container.querySelectorAll("table, tr, td, div, p, span"));
+  candidates.forEach((el) => {
+    const text = el.textContent || "";
+    if (!semaiLooksLikeExternalSenderWarningText(text)) return;
+    removeBannerAnchor(el);
+  });
+}
+
 // ── Entire-body signature detection ──────────────────────────────────────────
 
 // Detect when the entire body is a compact branded signature with no actual message.
@@ -972,27 +1027,7 @@ function semaiCleanBodyClone(bodyEl, senderFirstName) {
   }
 
   // 0. Remove Outlook "external sender" warning banners
-  clone.querySelectorAll('a[href*="LearnAboutSenderIdentification"]').forEach(a => {
-    let el = a;
-    let trAncestor = null;
-    while (el && el !== clone) {
-      const tag = el.tagName;
-      if (tag === "TR" && !trAncestor) trAncestor = el;
-      if (tag === "TABLE" || (tag === "DIV" && el.parentElement !== clone)) {
-        // Guard: only remove the whole element if it's small (clearly a banner, not main content).
-        // A warning banner is typically < 500 chars; a main content table wrapping the whole email is much larger.
-        if (el.textContent.trim().length < 500) {
-          el.remove();
-        } else if (trAncestor) {
-          // Remove just the banner row to avoid nuking the main content table.
-          trAncestor.remove();
-        }
-        // else: deeply nested with no TR — skip to avoid destroying content
-        break;
-      }
-      el = el.parentElement;
-    }
-  });
+  semaiRemoveExternalSenderWarnings(clone);
 
   // 1. Remove Outlook reply/forward header blocks
   clone.querySelectorAll(
