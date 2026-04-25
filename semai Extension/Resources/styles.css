@@ -344,7 +344,7 @@ body.semai-calibrating * {
   z-index: 999998;
   display: flex;
   flex-direction: column;
-  --semai-chat-font-size: 13px;
+  --semai-chat-font-size: 14px;
   background: #f1f5f9;
   font-family: system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Text",
     "Segoe UI", sans-serif;
@@ -601,7 +601,7 @@ body.semai-calibrating * {
 
 /* Message body inside bubble */
 .semai-chat-body {
-  font-size: inherit;
+  font-size: var(--semai-chat-font-size, 14px) !important;
   cursor: text;
   user-select: text;
   -webkit-user-select: text;
@@ -609,6 +609,8 @@ body.semai-calibrating * {
 
 .semai-chat-body,
 .semai-chat-body * {
+  font-size: var(--semai-chat-font-size, 14px) !important;
+  line-height: inherit;
   user-select: text;
   -webkit-user-select: text;
 }

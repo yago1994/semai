@@ -194,7 +194,7 @@ async function semaiPostOutlookReplyAll(messageId, comment) {
 
 // Pull a small, distinctive normalized snippet from a message body to compare
 // against the API's BodyPreview. We strip HTML, collapse whitespace, lowercase,
-// and pick a 30-char window from the middle of the first usable line. The
+// and pick a 50-char window from the middle of the first usable line. The
 // middle is more likely to be unique than a greeting/signature.
 function semaiBodySnippet(bodyText) {
   if (!bodyText) return "";
@@ -211,19 +211,118 @@ function semaiBodySnippet(bodyText) {
   return stripped.slice(start, start + 50);
 }
 
+// =====================================================================
+// SAFE-MATCH GATE — prevents wrong-thread reply-all (gotcha #8)
+// ---------------------------------------------------------------------
+// Two unrelated threads can easily share a BodyPreview ("thanks!",
+// "Sent from my iPhone", boilerplate). If we trusted body-preview
+// matching alone, a coincidental hit could pivot to the wrong
+// ConversationId and route the user's reply to the wrong recipients.
+// That is a "MUST NOT happen" failure mode.
+//
+// Layered defenses, in order of evaluation:
+//
+//   (gate 1) Snippet must be ≥ SEMAI_MIN_SNIPPET_LEN chars
+//            after the greeting skip in semaiBodySnippet.
+//   (gate 2) Snippet must NOT be dominated by a generic phrase
+//            ("thanks", "ok", "got it", "regards", etc.).
+//   (gate 3) For every body-preview hit, the candidate's From email
+//            MUST equal the overlay sender's email when both are
+//            known. Different sender ⇒ reject this candidate.
+//   (gate 4) Candidate's ReceivedDateTime must be within
+//            SEMAI_MAX_DATE_DELTA_MIN minutes of the overlay's
+//            timestamp. >5 min off ⇒ reject this candidate.
+//   (gate 5) ≥ SEMAI_MIN_CONFIRMING_MATCHES *distinct* overlay
+//            messages must survive gates 1-4 against the SAME
+//            ConversationId. One match alone is NOT enough.
+//   (gate 6) Single-match override: a lone match is accepted ONLY
+//            if its snippet is ≥ SEMAI_STRICT_SNIPPET_LEN, its
+//            sender is verified-equal, and its date is within
+//            SEMAI_STRICT_DATE_DELTA_MIN minutes.
+//
+// Any failure throws — the caller catches and falls back to the
+// compose-UI path. That fallback leaves a draft (UX wart) but it
+// CANNOT misroute a reply, which is the invariant we protect.
+// =====================================================================
+const SEMAI_MIN_SNIPPET_LEN = 30;
+const SEMAI_STRICT_SNIPPET_LEN = 40;
+const SEMAI_MAX_DATE_DELTA_MIN = 5;
+const SEMAI_STRICT_DATE_DELTA_MIN = 2;
+const SEMAI_MIN_CONFIRMING_MATCHES = 2;
+
+// Phrases that, if they dominate a snippet, cannot uniquely identify a
+// thread because dozens of unrelated threads contain them verbatim.
+// Match is "phrase covers >70% of snippet" so a snippet that merely
+// mentions "thanks" inside richer text still passes.
+const SEMAI_GENERIC_PHRASES = [
+  "thanks", "thank you", "thx", "ty",
+  "ok", "okay", "kk",
+  "got it", "sounds good", "sure thing", "yes", "yep", "no problem",
+  "lgtm", "looks good", "nice", "great", "cool",
+  "received", "noted", "will do", "on it", "perfect",
+  "sent from my iphone", "sent from my android",
+  "best regards", "kind regards", "regards", "cheers"
+];
+
+function semaiSnippetIsGeneric(snippet) {
+  const s = (snippet || "").trim().toLowerCase();
+  if (!s) return true;
+  return SEMAI_GENERIC_PHRASES.some((g) => {
+    if (s === g) return true;
+    if (s.includes(g) && g.length / s.length > 0.7) return true;
+    return false;
+  });
+}
+
+function semaiNormalizeEmailForCompare(raw) {
+  if (typeof raw !== "string") return "";
+  // Pull bare address out of "Display Name <addr@domain>" if present.
+  const m = raw.match(/<\s*([^>]+@[^>]+)\s*>/);
+  const candidate = m ? m[1] : raw;
+  return candidate.trim().toLowerCase();
+}
+
+// Best-effort parse of the overlay's free-form timestamp string into a Date.
+// Outlook stamps either an ISO `datetime` attribute or a localized display
+// string ("Mon 4/15/2024 10:23 AM" / "10:23 AM"). We accept anything
+// Date.parse handles; otherwise return null and the resolver downgrades to
+// "no date check available" (treats date as inconclusive, NOT as a pass).
+function semaiParseOverlayTimestamp(raw) {
+  if (!raw) return null;
+  const t = String(raw).trim();
+  if (!t) return null;
+  const ms = Date.parse(t);
+  if (!Number.isNaN(ms)) return new Date(ms);
+  return null;
+}
+
+function semaiExtractRestSenderEmail(restMsg) {
+  if (!restMsg || typeof restMsg !== "object") return "";
+  const from = restMsg.From && restMsg.From.EmailAddress;
+  if (from && typeof from.Address === "string" && from.Address) {
+    return semaiNormalizeEmailForCompare(from.Address);
+  }
+  const sender = restMsg.Sender && restMsg.Sender.EmailAddress;
+  if (sender && typeof sender.Address === "string" && sender.Address) {
+    return semaiNormalizeEmailForCompare(sender.Address);
+  }
+  return "";
+}
+
 // Resolves the messageId we should reply-all to, given the thread we're
 // looking at. Strategy:
 //   1. Smoke test the token.
-//   2. List the most recent N messages from the user's mailbox by date (no
-//      $search — search has a 5–60s indexing lag and may miss the user's
-//      just-sent reply or recent activity).
-//   3. Compare each chat-overlay message body against the returned
-//      messages' BodyPreview. The OLDEST chat-overlay messages are most
-//      likely to be indexed and least likely to collide with the user's
-//      drafts. First match → take its ConversationId.
-//   4. Of all the recent messages we just listed, pick the one with that
-//      ConversationId AND the latest ReceivedDateTime. That's our reply
-//      target.
+//   2. List the most recent 50 messages by ReceivedDateTime desc.
+//   3. For every chat-overlay message, find recent messages whose
+//      BodyPreview contains the overlay snippet AND whose sender email
+//      matches AND whose ReceivedDateTime is within tolerance. (See
+//      SAFE-MATCH GATE block above.)
+//   4. Group surviving matches by ConversationId. The dominant group
+//      must contain ≥ SEMAI_MIN_CONFIRMING_MATCHES *distinct* overlay
+//      messages, otherwise we refuse to send via REST and fall back to
+//      compose UI. A single weak match is rejected.
+//   5. Of all messages in the chosen ConversationId, pick the latest
+//      non-draft. That's our reply target.
 async function semaiResolveMessageIdViaRest(threadMessages) {
   if (!semaiCachedOutlookToken) {
     throw new Error("No Outlook bearer token captured yet.");
@@ -240,9 +339,6 @@ async function semaiResolveMessageIdViaRest(threadMessages) {
   semaiDebugLine("REST: smoke OK ✓");
 
   // ----- List recent messages -----
-  // 50 covers most active mailboxes' last few days. We deliberately do NOT
-  // pass $select since this tenant rejects some fields (ConversationTopic)
-  // and the default response includes everything we need.
   const url = `https://outlook.office.com/api/v2.0/me/messages?$orderby=${encodeURIComponent("ReceivedDateTime desc")}&$top=50`;
   semaiDebugLine("REST: listing 50 most recent messages…");
   const res = await semaiCallOutlookApi(url, "GET");
@@ -259,39 +355,150 @@ async function semaiResolveMessageIdViaRest(threadMessages) {
     throw new Error("Recent-messages list returned 0 results.");
   }
 
-  // ----- Match against chat-overlay messages -----
-  // Iterate from the OLDEST chat-overlay messages forward — those are
-  // guaranteed indexed, and they don't include the user's just-typed reply.
+  // ----- Build candidate matches with all safety gates applied -----
   const overlayMessages = Array.isArray(threadMessages) ? threadMessages : [];
   const norm = (s) => (s || "").replace(/\s+/g, " ").trim().toLowerCase();
-  const recentNormPreviews = recent.map((m) => norm(m.BodyPreview));
+  semaiDebugLine(`SAFE: scanning ${overlayMessages.length} overlay msgs against ${recent.length} recent…`);
 
-  let conversationId = "";
-  let pivotMatch = null;
-  for (const overlayMsg of overlayMessages) {
+  // matches: [{ overlayIdx, recentMsg, snippet, senderConfirmed, dateDeltaMin }]
+  const matches = [];
+  for (let i = 0; i < overlayMessages.length; i++) {
+    const overlayMsg = overlayMessages[i];
     const snippet = semaiBodySnippet(overlayMsg.cleanHtml || overlayMsg.rawHtml || "");
-    if (!snippet || snippet.length < 12) continue;
-    const idx = recentNormPreviews.findIndex((preview) =>
-      preview.includes(snippet) || snippet.includes(preview.slice(0, 30))
+
+    // Gate 1: snippet length.
+    if (!snippet) {
+      semaiDebugLine(`SAFE: overlay[${i}] no usable snippet — skip`);
+      continue;
+    }
+    if (snippet.length < SEMAI_MIN_SNIPPET_LEN) {
+      semaiDebugLine(`SAFE: overlay[${i}] snippet too short (${snippet.length}<${SEMAI_MIN_SNIPPET_LEN}) — skip`);
+      continue;
+    }
+    // Gate 2: snippet must not be a generic phrase.
+    if (semaiSnippetIsGeneric(snippet)) {
+      semaiDebugLine(`SAFE: overlay[${i}] snippet generic ("${snippet.slice(0, 30)}…") — skip`);
+      continue;
+    }
+
+    const overlayEmail = semaiNormalizeEmailForCompare(overlayMsg.sender && overlayMsg.sender.email);
+    const overlayDate = semaiParseOverlayTimestamp(overlayMsg.timestamp);
+
+    let bodyHits = 0;
+    let senderRejects = 0;
+    let dateRejects = 0;
+    let acceptedThisOverlay = 0;
+
+    for (const recentMsg of recent) {
+      const previewNorm = norm(recentMsg.BodyPreview);
+      if (!previewNorm) continue;
+
+      // Body-preview hit: snippet substring of preview, OR (when preview is
+      // shorter than our 50-char snippet) the preview's first 30 chars
+      // appear inside the snippet.
+      const bodyHit =
+        previewNorm.includes(snippet) ||
+        (previewNorm.length >= 30 && snippet.includes(previewNorm.slice(0, 30)));
+      if (!bodyHit) continue;
+      bodyHits++;
+
+      // Gate 3: sender cross-check.
+      const restSender = semaiExtractRestSenderEmail(recentMsg);
+      if (overlayEmail && restSender && overlayEmail !== restSender) {
+        senderRejects++;
+        continue;
+      }
+
+      // Gate 4: date proximity (only enforced when overlay date parsed).
+      let dateDeltaMin = null;
+      if (overlayDate) {
+        const recentDate = new Date(recentMsg.ReceivedDateTime || recentMsg.SentDateTime || 0);
+        if (!Number.isNaN(recentDate.getTime()) && recentDate.getTime() > 0) {
+          dateDeltaMin = Math.abs(recentDate.getTime() - overlayDate.getTime()) / 60000;
+          if (dateDeltaMin > SEMAI_MAX_DATE_DELTA_MIN) {
+            dateRejects++;
+            continue;
+          }
+        }
+      }
+
+      matches.push({
+        overlayIdx: i,
+        recentMsg,
+        snippet,
+        senderConfirmed: !!(overlayEmail && restSender && overlayEmail === restSender),
+        dateDeltaMin
+      });
+      acceptedThisOverlay++;
+    }
+
+    semaiDebugLine(
+      `SAFE: overlay[${i}] sender=${overlayEmail || "(unknown)"} ` +
+      `snippet="${snippet.slice(0, 24)}…" bodyHits=${bodyHits} ` +
+      `senderReject=${senderRejects} dateReject=${dateRejects} accepted=${acceptedThisOverlay}`
     );
-    if (idx >= 0) {
-      pivotMatch = recent[idx];
-      conversationId = pivotMatch.ConversationId || "";
-      semaiDebugLine(`REST: matched overlay msg "${snippet.slice(0, 30)}…" → convId=${(conversationId || "").slice(0, 16)}…`);
-      break;
+  }
+
+  if (matches.length === 0) {
+    semaiDebugLine("SAFE: ✗ 0 matches survived snippet+sender+date gates — REFUSING REST send");
+    throw new Error("No safe matches across body+sender+date gates. Refusing REST send to avoid wrong-thread risk.");
+  }
+
+  // ----- Group by ConversationId, count DISTINCT overlay confirmations -----
+  const byConvId = new Map();
+  for (const m of matches) {
+    const cid = m.recentMsg.ConversationId || "";
+    if (!cid) continue;
+    if (!byConvId.has(cid)) byConvId.set(cid, { overlayIdxs: new Set(), matches: [] });
+    const bucket = byConvId.get(cid);
+    bucket.overlayIdxs.add(m.overlayIdx);
+    bucket.matches.push(m);
+  }
+
+  let chosenConvId = "";
+  let chosenBucket = null;
+  for (const [cid, bucket] of byConvId.entries()) {
+    if (!chosenBucket || bucket.overlayIdxs.size > chosenBucket.overlayIdxs.size) {
+      chosenConvId = cid;
+      chosenBucket = bucket;
     }
   }
 
-  if (!conversationId) {
-    semaiDebugLine(`REST: no overlay message matched any of the ${recent.length} recent BodyPreviews`);
-    throw new Error("Could not identify the active conversation from recent messages.");
+  if (!chosenBucket) {
+    throw new Error("Matches found but none had a ConversationId. Refusing REST send.");
   }
 
-  // ----- Find the latest message in that conversation -----
-  const inConversation = recent.filter((m) => m.ConversationId === conversationId && !m.IsDraft);
+  const distinctConfirmations = chosenBucket.overlayIdxs.size;
+  semaiDebugLine(`SAFE: dominant convId=${chosenConvId.slice(0, 16)}… distinct overlay confirmations=${distinctConfirmations}`);
+
+  // Gate 5 + Gate 6.
+  if (distinctConfirmations < SEMAI_MIN_CONFIRMING_MATCHES) {
+    const strictMatch = chosenBucket.matches.find((m) =>
+      m.snippet.length >= SEMAI_STRICT_SNIPPET_LEN &&
+      m.senderConfirmed &&
+      m.dateDeltaMin !== null &&
+      m.dateDeltaMin <= SEMAI_STRICT_DATE_DELTA_MIN
+    );
+
+    if (!strictMatch) {
+      semaiDebugLine(
+        `SAFE: ✗ only ${distinctConfirmations} distinct match(es), strict single-match criteria failed — REFUSING REST send`
+      );
+      throw new Error(
+        `Only ${distinctConfirmations} weak match(es) (need ≥${SEMAI_MIN_CONFIRMING_MATCHES} or strict single-match). Refusing REST send.`
+      );
+    }
+    semaiDebugLine(
+      `SAFE: ✓ single strict match passes (snippet=${strictMatch.snippet.length}ch, sender✓, date Δ=${strictMatch.dateDeltaMin.toFixed(1)}min)`
+    );
+  } else {
+    semaiDebugLine(`SAFE: ✓ ${distinctConfirmations} distinct overlay matches confirm convId`);
+  }
+
+  // ----- Find the latest non-draft message in that conversation -----
+  const inConversation = recent.filter((m) => m.ConversationId === chosenConvId && !m.IsDraft);
   if (inConversation.length === 0) {
-    // Fallback: include drafts (shouldn't normally happen).
-    inConversation.push(pivotMatch);
+    inConversation.push(chosenBucket.matches[0].recentMsg);
   }
   inConversation.sort((a, b) => (new Date(b.ReceivedDateTime || 0)) - (new Date(a.ReceivedDateTime || 0)));
   const latest = inConversation[0];
@@ -1162,9 +1369,10 @@ const SEMAI_AI_AGENT_ENABLED = false;
 const SEMAI_CALIBRATION_STORAGE_KEY = "semaiSenderCalibration";
 const SEMAI_PANEL_POSITION_STORAGE_KEY = "semaiPanelPosition";
 const SEMAI_CHAT_UI_SETTINGS_STORAGE_KEY = "semaiChatUiSettings";
-const SEMAI_CHAT_FONT_SIZE_MIN = 11;
-const SEMAI_CHAT_FONT_SIZE_MAX = 20;
-const SEMAI_CHAT_FONT_SIZE_DEFAULT = 13;
+const SEMAI_CHAT_FONT_SIZE_MIN = 12;
+const SEMAI_CHAT_FONT_SIZE_MAX = 24;
+const SEMAI_CHAT_FONT_SIZE_STEP = 2;
+const SEMAI_CHAT_FONT_SIZE_DEFAULT = 14;
 
 let semaiSavedSelection = null;
 let semaiCalibrationState = null;
@@ -1690,9 +1898,15 @@ let semaiChatUiSettings = semaiGetChatUiSettings();
 
 function semaiNormalizeChatUiSettings(settings) {
   const rawFontSize = Number(settings?.fontSize);
-  const fontSize = Number.isFinite(rawFontSize)
-    ? Math.min(SEMAI_CHAT_FONT_SIZE_MAX, Math.max(SEMAI_CHAT_FONT_SIZE_MIN, Math.round(rawFontSize)))
+  const snappedFontSize = Number.isFinite(rawFontSize)
+    ? (
+      Math.round((rawFontSize - SEMAI_CHAT_FONT_SIZE_MIN) / SEMAI_CHAT_FONT_SIZE_STEP) * SEMAI_CHAT_FONT_SIZE_STEP
+    ) + SEMAI_CHAT_FONT_SIZE_MIN
     : SEMAI_CHAT_FONT_SIZE_DEFAULT;
+  const fontSize = Math.min(
+    SEMAI_CHAT_FONT_SIZE_MAX,
+    Math.max(SEMAI_CHAT_FONT_SIZE_MIN, snappedFontSize)
+  );
 
   return { fontSize };
 }
@@ -3489,6 +3703,8 @@ function semaiGetThreadSubject() {
   const readingPane = semaiGetReadingPane();
   const searchRoots = [readingPane, document].filter(Boolean);
   const selectors = [
+    'span.JdFsz[title]',
+    '.f77rj > span.JdFsz[title]',
     '[data-testid="subjectLine"]',
     '[data-testid*="subject" i]',
     '[aria-label="Subject"]',
@@ -3529,7 +3745,7 @@ function semaiGetThreadSubject() {
         const text = normalizeSubject(
           el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement
             ? el.value
-            : (el.innerText || el.textContent || "")
+            : (el.getAttribute("title") || el.innerText || el.textContent || "")
         );
         if (isLikelySubject(text, el)) {
           return text;
@@ -3583,7 +3799,7 @@ function semaiCreateChatOverlay(messages, subject) {
             type="range"
             min="${SEMAI_CHAT_FONT_SIZE_MIN}"
             max="${SEMAI_CHAT_FONT_SIZE_MAX}"
-            step="1"
+            step="${SEMAI_CHAT_FONT_SIZE_STEP}"
             value="${semaiChatUiSettings.fontSize}"
           />
         </div>
@@ -3591,7 +3807,7 @@ function semaiCreateChatOverlay(messages, subject) {
       <button class="semai-chat-close" type="button">✕ Hide chat view</button>
     </div>
   `;
-  header.querySelector(".semai-chat-close").addEventListener("click", semaiDeactivateChatView);
+  header.querySelector(".semai-chat-close").addEventListener("click", () => semaiDeactivateChatView());
   overlay.appendChild(header);
   semaiApplyChatUiSettings(overlay);
 
