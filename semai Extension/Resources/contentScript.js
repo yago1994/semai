@@ -1,3 +1,304 @@
+// =====================================================================
+// SEMAI REST-API REPLY (ADDITIVE — DOES NOT REPLACE COMPOSE-UI FLOW)
+// ---------------------------------------------------------------------
+// The compose-UI reply path (semaiOpenReplyAllCompose / semaiInsertComposeText
+// / semaiSendCompose) is preserved exactly as-is. It is used as the fallback
+// whenever any of the following are true:
+//   - SEMAI_USE_REST_API_REPLY is false (kill-switch)
+//   - No OAuth bearer token has been captured yet
+//   - The message ID cannot be determined from the DOM
+//   - The REST POST itself fails (network, 4xx, 5xx)
+//
+// To revert entirely, flip SEMAI_USE_REST_API_REPLY to false. The existing
+// compose-UI path will run unchanged.
+// =====================================================================
+const SEMAI_USE_REST_API_REPLY = true;
+
+// Module-level cache. Outlook's OAuth bearer is short-lived (usually ~1h) but
+// is renewed continuously by the SPA, so passive hook capture is reliable as
+// long as the user keeps Outlook open. We refresh the cached token every time
+// we see a fresh Authorization header on an Outlook API call.
+let semaiCachedOutlookToken = "";
+let semaiCachedOutlookTokenAt = 0;
+
+// Endpoints we can use the captured token against. We accept tokens seen on
+// any of these hosts because Outlook fetches them all with the same bearer.
+const SEMAI_OUTLOOK_API_HOSTS = [
+  "outlook.office.com",
+  "outlook.office365.com",
+  "substrate.office.com",
+  "graph.microsoft.com"
+];
+
+function semaiIsOutlookApiUrl(urlStr) {
+  if (!urlStr) return false;
+  try {
+    const u = new URL(urlStr, window.location.href);
+    return SEMAI_OUTLOOK_API_HOSTS.some(host => u.hostname.endsWith(host));
+  } catch (_) {
+    return false;
+  }
+}
+
+function semaiRecordCapturedToken(rawAuthHeader, sourceLabel) {
+  if (typeof rawAuthHeader !== "string") return;
+  const trimmed = rawAuthHeader.trim();
+  if (!/^Bearer\s+\S+/i.test(trimmed)) return;
+  if (trimmed === semaiCachedOutlookToken) return;
+  semaiCachedOutlookToken = trimmed;
+  semaiCachedOutlookTokenAt = Date.now();
+  try {
+    if (typeof semaiNativeLog === "function") {
+      const tokenLen = trimmed.length;
+      semaiNativeLog(`[semai-rest] captured Outlook bearer token (source=${sourceLabel}, len=${tokenLen})`);
+    }
+    semaiDebugLine(`✓ token captured (${sourceLabel}, len=${trimmed.length})`);
+  } catch (_) {
+    // semaiNativeLog / semaiDebugLine may not be defined on the very first hook call; ignore.
+  }
+}
+
+// Listen for bearer tokens captured by pageWorldHook.js.
+//
+// Content scripts run in an isolated world, so wrapping window.fetch /
+// XMLHttpRequest here would only wrap OUR fetch — Outlook's own traffic
+// would bypass us entirely. Instead, pageWorldHook.js (injected at
+// document_start via content.js) runs in the page's main world, wraps the
+// real fetch/XHR, and pipes captured bearer tokens back to us via a
+// CustomEvent on `document`. This listener just caches whatever it hears.
+document.addEventListener("semai-outlook-token", (event) => {
+  const token = event && event.detail && event.detail.token;
+  if (typeof token === "string") {
+    semaiRecordCapturedToken(token, "page-world-hook");
+  }
+});
+
+// Walk DOM ancestors of the message body looking for a stable Outlook item
+// ID. Outlook stamps message IDs into a few different attributes depending on
+// the SPA build — we try several patterns and return the first match. On
+// failure we dump a *full* attribute summary of the ancestor chain into the
+// chat debug panel so we can see exactly what is available in the user's
+// build and tune the extractor.
+function semaiExtractMessageId(bodyEl) {
+  if (!(bodyEl instanceof Element)) return "";
+
+  const directAttrs = ["data-convid", "data-itemid", "data-message-id", "data-itemserverid"];
+  const chainDump = [];
+  let node = bodyEl;
+  for (let d = 0; d < 16 && node; d++, node = node.parentElement) {
+    const attrNames = node.getAttributeNames ? node.getAttributeNames() : [];
+
+    // 1) Direct attribute hit
+    for (const attr of directAttrs) {
+      const v = node.getAttribute && node.getAttribute(attr);
+      if (v && v.length > 8) {
+        try {
+          semaiNativeLog(`[semai-rest] messageId via [${attr}] at depth=${d}`);
+          semaiDebugLine(`msgId via [${attr}] at d=${d}`);
+        } catch (_) {}
+        return v;
+      }
+    }
+
+    // 2) ID matches the EWS base64 prefix
+    const elId = node.id || "";
+    const idMatch = elId.match(/(AAMkA[A-Za-z0-9_\-+/=]{20,})/);
+    if (idMatch) {
+      try {
+        semaiNativeLog(`[semai-rest] messageId via id-pattern at depth=${d}`);
+        semaiDebugLine(`msgId via id-pattern at d=${d}`);
+      } catch (_) {}
+      return idMatch[1];
+    }
+
+    // 3) Any data-* attribute value matches the EWS base64 prefix
+    for (const name of attrNames) {
+      if (!/^data-/.test(name)) continue;
+      const v = node.getAttribute(name);
+      const m = v && typeof v === "string" ? v.match(/(AAMkA[A-Za-z0-9_\-+/=]{20,})/) : null;
+      if (m) {
+        try {
+          semaiNativeLog(`[semai-rest] messageId via ${name} at depth=${d}`);
+          semaiDebugLine(`msgId via ${name} at d=${d}`);
+        } catch (_) {}
+        return m[1];
+      }
+    }
+
+    // 4) Build a verbose dump for diagnostics. Includes ALL attribute names
+    // and the first 60 chars of each value, so we can spot any candidate.
+    const attrDump = attrNames.map((name) => {
+      let v = node.getAttribute(name) || "";
+      if (v.length > 60) v = v.slice(0, 60) + "…";
+      return `${name}=${v}`;
+    });
+    chainDump.push(`d=${d} <${(node.tagName || "?").toLowerCase()}> ${attrDump.join(" ")}`);
+  }
+
+  try {
+    semaiNativeLog(`[semai-rest] messageId NOT FOUND — ancestor chain dump follows`);
+    semaiDebugLine("---- DOM CHAIN (for diagnostics) ----");
+    chainDump.forEach((line) => semaiDebugLine(line));
+    semaiDebugLine("---- end chain ----");
+  } catch (_) {}
+  return "";
+}
+
+// Wrapper that routes Outlook REST API calls through the background service
+// worker. Safari's content-script context blocks Authorization-bearing fetches
+// to outlook.office.com with "Load failed", but background workers have full
+// host_permissions and succeed. Returns { ok, status, body, error }.
+function semaiCallOutlookApi(url, method, body) {
+  return new Promise((resolve) => {
+    if (!semaiCachedOutlookToken) {
+      resolve({ ok: false, status: 0, error: "No Outlook bearer token captured yet." });
+      return;
+    }
+    try {
+      chrome.runtime.sendMessage(
+        {
+          type: "OUTLOOK_API_CALL",
+          payload: { url, method: method || "GET", token: semaiCachedOutlookToken, body: body || null }
+        },
+        (response) => {
+          if (chrome.runtime.lastError) {
+            resolve({ ok: false, status: 0, error: chrome.runtime.lastError.message });
+            return;
+          }
+          resolve(response || { ok: false, status: 0, error: "No response from background worker" });
+        }
+      );
+    } catch (err) {
+      resolve({ ok: false, status: 0, error: err && err.message ? err.message : String(err) });
+    }
+  });
+}
+
+async function semaiPostOutlookReplyAll(messageId, comment) {
+  if (!messageId) {
+    throw new Error("No Outlook message ID resolved.");
+  }
+
+  const url = `https://outlook.office.com/api/v2.0/me/messages/${encodeURIComponent(messageId)}/replyAll`;
+  const response = await semaiCallOutlookApi(url, "POST", { Comment: comment });
+
+  if (response.ok && (response.status === 202 || response.status === 200 || response.status === 204)) {
+    return true;
+  }
+
+  if (response.error) {
+    throw new Error(`Outlook REST replyAll failed: ${response.error}`);
+  }
+  throw new Error(`Outlook REST replyAll failed: ${response.status} ${response.statusText || ""} ${(response.body || "").slice(0, 200)}`);
+}
+
+// Pull a small, distinctive normalized snippet from a message body to compare
+// against the API's BodyPreview. We strip HTML, collapse whitespace, lowercase,
+// and pick a 30-char window from the middle of the first usable line. The
+// middle is more likely to be unique than a greeting/signature.
+function semaiBodySnippet(bodyText) {
+  if (!bodyText) return "";
+  const stripped = String(bodyText)
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&[a-z]+;|&#\d+;/gi, " ")
+    .replace(/[\r\n]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+  if (stripped.length < 12) return "";
+  // If long enough, drop the first 20 chars to skip "hi joe," etc.
+  const start = stripped.length > 60 ? 20 : 0;
+  return stripped.slice(start, start + 50);
+}
+
+// Resolves the messageId we should reply-all to, given the thread we're
+// looking at. Strategy:
+//   1. Smoke test the token.
+//   2. List the most recent N messages from the user's mailbox by date (no
+//      $search — search has a 5–60s indexing lag and may miss the user's
+//      just-sent reply or recent activity).
+//   3. Compare each chat-overlay message body against the returned
+//      messages' BodyPreview. The OLDEST chat-overlay messages are most
+//      likely to be indexed and least likely to collide with the user's
+//      drafts. First match → take its ConversationId.
+//   4. Of all the recent messages we just listed, pick the one with that
+//      ConversationId AND the latest ReceivedDateTime. That's our reply
+//      target.
+async function semaiResolveMessageIdViaRest(threadMessages) {
+  if (!semaiCachedOutlookToken) {
+    throw new Error("No Outlook bearer token captured yet.");
+  }
+
+  // ----- Smoke test -----
+  semaiDebugLine("REST: smoke test GET /me/messages?$top=1");
+  const smoke = await semaiCallOutlookApi("https://outlook.office.com/api/v2.0/me/messages?$top=1", "GET");
+  if (!smoke.ok) {
+    semaiDebugLine(`REST: smoke FAILED status=${smoke.status}`);
+    semaiDebugLine(`REST: smoke body: ${(smoke.error || smoke.body || "").slice(0, 400)}`);
+    throw new Error(`Smoke test failed (${smoke.status}): ${(smoke.error || smoke.body || "").slice(0, 200)}`);
+  }
+  semaiDebugLine("REST: smoke OK ✓");
+
+  // ----- List recent messages -----
+  // 50 covers most active mailboxes' last few days. We deliberately do NOT
+  // pass $select since this tenant rejects some fields (ConversationTopic)
+  // and the default response includes everything we need.
+  const url = `https://outlook.office.com/api/v2.0/me/messages?$orderby=${encodeURIComponent("ReceivedDateTime desc")}&$top=50`;
+  semaiDebugLine("REST: listing 50 most recent messages…");
+  const res = await semaiCallOutlookApi(url, "GET");
+  if (!res.ok) {
+    semaiDebugLine(`REST: list FAILED status=${res.status}`);
+    semaiDebugLine(`REST: list body: ${(res.error || res.body || "").slice(0, 400)}`);
+    throw new Error(`Recent-messages list failed (${res.status}).`);
+  }
+  let data = {};
+  try { data = JSON.parse(res.body || "{}"); } catch (_) {}
+  const recent = (data && data.value) || [];
+  semaiDebugLine(`REST: got ${recent.length} recent messages`);
+  if (recent.length === 0) {
+    throw new Error("Recent-messages list returned 0 results.");
+  }
+
+  // ----- Match against chat-overlay messages -----
+  // Iterate from the OLDEST chat-overlay messages forward — those are
+  // guaranteed indexed, and they don't include the user's just-typed reply.
+  const overlayMessages = Array.isArray(threadMessages) ? threadMessages : [];
+  const norm = (s) => (s || "").replace(/\s+/g, " ").trim().toLowerCase();
+  const recentNormPreviews = recent.map((m) => norm(m.BodyPreview));
+
+  let conversationId = "";
+  let pivotMatch = null;
+  for (const overlayMsg of overlayMessages) {
+    const snippet = semaiBodySnippet(overlayMsg.cleanHtml || overlayMsg.rawHtml || "");
+    if (!snippet || snippet.length < 12) continue;
+    const idx = recentNormPreviews.findIndex((preview) =>
+      preview.includes(snippet) || snippet.includes(preview.slice(0, 30))
+    );
+    if (idx >= 0) {
+      pivotMatch = recent[idx];
+      conversationId = pivotMatch.ConversationId || "";
+      semaiDebugLine(`REST: matched overlay msg "${snippet.slice(0, 30)}…" → convId=${(conversationId || "").slice(0, 16)}…`);
+      break;
+    }
+  }
+
+  if (!conversationId) {
+    semaiDebugLine(`REST: no overlay message matched any of the ${recent.length} recent BodyPreviews`);
+    throw new Error("Could not identify the active conversation from recent messages.");
+  }
+
+  // ----- Find the latest message in that conversation -----
+  const inConversation = recent.filter((m) => m.ConversationId === conversationId && !m.IsDraft);
+  if (inConversation.length === 0) {
+    // Fallback: include drafts (shouldn't normally happen).
+    inConversation.push(pivotMatch);
+  }
+  inConversation.sort((a, b) => (new Date(b.ReceivedDateTime || 0)) - (new Date(a.ReceivedDateTime || 0)));
+  const latest = inConversation[0];
+  semaiDebugLine(`REST: latest in convo → ${(latest.Id || "").slice(0, 24)}… received=${latest.ReceivedDateTime || ""}`);
+  return latest.Id;
+}
+
 function semaiIsVisibleElement(el) {
   if (!(el instanceof Element)) return false;
   const rect = el.getBoundingClientRect();
@@ -44,17 +345,46 @@ function semaiGetComposeCandidates() {
   return Array.from(document.querySelectorAll(selector)).filter(semaiLooksLikeComposeElement);
 }
 
+function semaiScoreComposeElement(el) {
+  if (!(el instanceof HTMLElement)) return -1;
+
+  let score = 0;
+  if (el.matches('[data-lexical-editor="true"]')) score += 100;
+  if (el.getAttribute("role") === "textbox") score += 25;
+  if ((el.getAttribute("aria-label") || "").toLowerCase().includes("message body")) score += 20;
+  if (el.closest('[data-app-section="MailCompose"]')) score += 20;
+  if (el.closest('[data-contents="true"]')) score += 10;
+
+  // Prefer the innermost actual editor root over larger wrapper elements.
+  score += Math.min(el.querySelectorAll('[contenteditable="true"]').length, 5) * -5;
+
+  return score;
+}
+
+function semaiPickBestComposeElement(candidates) {
+  return [...candidates]
+    .sort((left, right) => {
+      const scoreDelta = semaiScoreComposeElement(right) - semaiScoreComposeElement(left);
+      if (scoreDelta !== 0) return scoreDelta;
+
+      const position = left.compareDocumentPosition(right);
+      if (position & Node.DOCUMENT_POSITION_FOLLOWING) return 1;
+      if (position & Node.DOCUMENT_POSITION_PRECEDING) return -1;
+      return 0;
+    })[0] || null;
+}
+
 // ===== UTIL: find the compose/body element =====
 function getComposeElement() {
   const candidates = semaiGetComposeCandidates();
   if (candidates.length > 0) {
-    return candidates[candidates.length - 1];
+    return semaiPickBestComposeElement(candidates);
   }
 
   const allEditable = Array.from(document.querySelectorAll('[contenteditable="true"], [role="textbox"]'))
     .filter(semaiLooksLikeComposeElement);
   if (allEditable.length > 0) {
-    return allEditable[allEditable.length - 1];
+    return semaiPickBestComposeElement(allEditable);
   }
 
   return null;
@@ -187,6 +517,7 @@ function semaiFindReplyAllModeSwitcher() {
 async function semaiEnsureReplyAllMode(timeoutMs = 2500) {
   const directReplyAll = semaiFindReplyAllButton();
   if (directReplyAll) {
+    semaiActivateElement(directReplyAll);
     return true;
   }
 
@@ -277,6 +608,262 @@ function semaiTriggerComposeSend(composeEl) {
   composeEl.dispatchEvent(new KeyboardEvent("keyup", keyOptions));
 }
 
+function semaiDescribeComposeElement(composeEl, index) {
+  if (!(composeEl instanceof HTMLElement)) {
+    return { index, connected: false };
+  }
+
+  const text = (composeEl.innerText || composeEl.textContent || "").replace(/\s+/g, " ").trim();
+  return {
+    index,
+    connected: composeEl.isConnected,
+    active: composeEl === getComposeElement(),
+    ariaLabel: composeEl.getAttribute("aria-label") || "",
+    textLength: text.length,
+    rect: {
+      width: Math.round(composeEl.getBoundingClientRect().width),
+      height: Math.round(composeEl.getBoundingClientRect().height)
+    }
+  };
+}
+
+function semaiLogComposeSnapshot(stage, composeEl = null, extra = {}) {
+  try {
+    const composeEls = semaiGetComposeCandidates();
+    const payload = {
+      stage,
+      composeCount: composeEls.length,
+      composeElements: composeEls.map((el, index) => semaiDescribeComposeElement(el, index)),
+      targetCompose: composeEl ? semaiDescribeComposeElement(composeEl, "target") : null,
+      ...extra
+    };
+    semaiNativeLog(`[semai-debug] ${JSON.stringify(payload)}`);
+    semaiAppendReplyDebugLine(payload);
+  } catch (error) {
+    console.log("[semai-debug] Failed to capture compose snapshot", error);
+  }
+}
+
+function semaiAppendReplyDebugLine(payload) {
+  const summary = [
+    payload.stage,
+    `compose=${payload.composeCount}`,
+    payload.targetCompose?.textLength !== undefined ? `targetText=${payload.targetCompose.textLength}` : "",
+    payload.sendButtonText ? `send="${payload.sendButtonText}"` : ""
+  ]
+    .filter(Boolean)
+    .join(" | ");
+
+  // Route through the sticky buffer so the line survives chat-overlay rebuilds.
+  semaiDebugLine(summary);
+}
+
+// Sticky debug log buffer. Survives chat-overlay rebuilds (Outlook re-renders
+// the overlay when the thread changes), so the user has time to read/copy
+// what scrolled past. Capped to keep memory bounded.
+const SEMAI_DEBUG_LOG_MAX = 500;
+const semaiDebugLogBuffer = [];
+
+function semaiDebugLine(text) {
+  try {
+    const line = String(text);
+    semaiDebugLogBuffer.push(line);
+    if (semaiDebugLogBuffer.length > SEMAI_DEBUG_LOG_MAX) {
+      semaiDebugLogBuffer.splice(0, semaiDebugLogBuffer.length - SEMAI_DEBUG_LOG_MAX);
+    }
+    semaiRenderDebugLog();
+  } catch (_) {}
+}
+
+function semaiRenderDebugLog() {
+  try {
+    const debugEl = document.getElementById("semai-chat-reply-debug");
+    if (!debugEl) return;
+    debugEl.textContent = semaiDebugLogBuffer.join("\n");
+    debugEl.scrollTop = debugEl.scrollHeight;
+  } catch (_) {}
+}
+
+// Replay buffered log lines whenever a new chat overlay appears so we don't
+// lose history across Outlook re-renders.
+(function semaiAttachDebugLogReplay() {
+  if (typeof MutationObserver !== "function") return;
+  const observer = new MutationObserver(() => {
+    const debugEl = document.getElementById("semai-chat-reply-debug");
+    if (debugEl && debugEl.textContent === "" && semaiDebugLogBuffer.length > 0) {
+      semaiRenderDebugLog();
+    }
+  });
+  // Wait for body to exist (we run at document_idle, so it should already).
+  if (document.body) {
+    observer.observe(document.body, { childList: true, subtree: true });
+  } else {
+    document.addEventListener("DOMContentLoaded", () => {
+      observer.observe(document.body, { childList: true, subtree: true });
+    }, { once: true });
+  }
+})();
+
+function semaiGetComposeText(composeEl) {
+  if (!(composeEl instanceof HTMLElement)) return "";
+  return (composeEl.innerText || composeEl.textContent || "").replace(/\s+/g, " ").trim();
+}
+
+function semaiFindComposeCloseButton(scopeEl) {
+  if (!(scopeEl instanceof Element) && !(scopeEl instanceof Document)) return null;
+
+  const candidates = Array.from(scopeEl.querySelectorAll(`
+    button,
+    [role="button"],
+    [role="menuitem"],
+    [aria-label],
+    [title],
+    [data-testid],
+    [data-icon-name]
+  `))
+    .filter(semaiIsVisibleElement)
+    .filter((el) => !semaiIsInsideRemouUi(el));
+
+  const discardButton = candidates.find((el) => /\bdiscard\b/i.test(semaiGetElementActionText(el)));
+  if (discardButton) return discardButton;
+
+  return candidates.find((el) => {
+    const text = semaiGetElementActionText(el);
+    return /\bclose\b/i.test(text) && /\bdraft\b/i.test(text);
+  }) || null;
+}
+
+function semaiFindScopedActionElement(scopeEl, matcher) {
+  if (!(scopeEl instanceof Element) && !(scopeEl instanceof Document)) return null;
+
+  const candidates = Array.from(scopeEl.querySelectorAll(`
+    button,
+    [role="button"],
+    [role="menuitem"],
+    [aria-label],
+    [title],
+    [data-testid],
+    [data-icon-name]
+  `))
+    .filter(semaiIsVisibleElement)
+    .filter((el) => !semaiIsInsideRemouUi(el))
+    .filter((el) => matcher(semaiGetElementActionText(el), el));
+
+  return candidates[candidates.length - 1] || null;
+}
+
+function semaiDispatchEscape(el) {
+  if (!(el instanceof HTMLElement)) return;
+  el.focus();
+
+  const eventOptions = {
+    key: "Escape",
+    code: "Escape",
+    keyCode: 27,
+    which: 27,
+    bubbles: true,
+    cancelable: true
+  };
+
+  el.dispatchEvent(new KeyboardEvent("keydown", eventOptions));
+  el.dispatchEvent(new KeyboardEvent("keyup", eventOptions));
+}
+
+async function semaiDismissLeftoverEmptyCompose() {
+  await new Promise((resolve) => window.setTimeout(resolve, 220));
+
+  const composeEl = getComposeElement();
+  if (!composeEl) return false;
+
+  const composeText = semaiGetComposeText(composeEl);
+  if (composeText.length > 0) {
+    semaiLogComposeSnapshot("leftover_compose_not_empty", composeEl, { composeTextLength: composeText.length });
+    return false;
+  }
+
+  semaiLogComposeSnapshot("leftover_empty_compose_detected", composeEl);
+  const composeContainer = semaiGetComposeContainer(composeEl);
+  semaiDispatchEscape(composeEl);
+  await new Promise((resolve) => window.setTimeout(resolve, 220));
+
+  const discardButton = semaiFindComposeCloseButton(document);
+  if (discardButton) {
+    semaiActivateElement(discardButton);
+    await new Promise((resolve) => window.setTimeout(resolve, 220));
+    semaiLogComposeSnapshot("leftover_empty_compose_discarded", composeEl, {
+      buttonText: semaiGetElementActionText(discardButton)
+    });
+    return true;
+  }
+
+  const closeButton = semaiFindComposeCloseButton(composeContainer || document);
+  if (closeButton) {
+    semaiActivateElement(closeButton);
+    await new Promise((resolve) => window.setTimeout(resolve, 220));
+    semaiLogComposeSnapshot("leftover_empty_compose_closed_button", composeEl, {
+      buttonText: semaiGetElementActionText(closeButton)
+    });
+    return true;
+  }
+
+  semaiLogComposeSnapshot("leftover_empty_compose_close_failed", composeEl);
+  return false;
+}
+
+async function semaiDismissLeftoverEmptyComposeTwice() {
+  const firstPass = await semaiDismissLeftoverEmptyCompose();
+  await new Promise((resolve) => window.setTimeout(resolve, 700));
+  const secondPass = await semaiDismissLeftoverEmptyCompose();
+  return firstPass || secondPass;
+}
+
+function semaiDescribeThreadDraftRows() {
+  const bodyNodes = Array.from(document.querySelectorAll('[aria-label="Message body"]:not([contenteditable])'));
+
+  return bodyNodes.slice(-8).map((bodyEl, index) => {
+    const container = bodyEl.closest('[data-test-id="mailMessageBodyContainer"]')?.parentElement || bodyEl.parentElement;
+    const scope = container || bodyEl;
+    const scopeText = semaiFullText(scope).replace(/\s+/g, " ").trim();
+    const actionCandidates = Array.from(scope.querySelectorAll(`
+      button,
+      [role="button"],
+      [role="menuitem"],
+      [aria-label],
+      [title],
+      [data-testid],
+      [data-icon-name]
+    `))
+      .filter(semaiIsVisibleElement)
+      .filter((el) => !semaiIsInsideRemouUi(el))
+      .map((el) => semaiGetElementActionText(el))
+      .filter(Boolean)
+      .slice(0, 8);
+
+    return {
+      index,
+      bodyTextLength: semaiFullText(bodyEl).replace(/\s+/g, " ").trim().length,
+      scopeTextSample: scopeText.slice(0, 160),
+      looksLikeDraft: /\bdraft\b/i.test(scopeText),
+      actions: actionCandidates
+    };
+  });
+}
+
+function semaiLogThreadDraftSnapshot(stage) {
+  try {
+    const rows = semaiDescribeThreadDraftRows();
+    semaiAppendReplyDebugLine({
+      stage,
+      composeCount: semaiGetComposeCandidates().length,
+      targetCompose: null,
+      rowSummary: rows.map((row) => `${row.index}:${row.looksLikeDraft ? "draft" : "msg"}:${row.bodyTextLength}`).join(", ")
+    });
+    semaiNativeLog(`[semai-thread-debug] ${JSON.stringify({ stage, rows })}`);
+  } catch (error) {
+    console.log("[semai-thread-debug] Failed to capture thread rows", error);
+  }
+}
+
 function semaiComposeIsStillActive(composeEl) {
   return composeEl instanceof HTMLElement && composeEl.isConnected && semaiLooksLikeComposeElement(composeEl);
 }
@@ -297,19 +884,25 @@ async function semaiWaitForComposeToClose(composeEl, timeoutMs = 5000) {
 async function semaiSendCompose(composeEl) {
   const composeContainer = semaiGetComposeContainer(composeEl);
   const sendButton = semaiFindSendButton(composeContainer || composeEl.ownerDocument || document);
+  semaiLogComposeSnapshot("before_send", composeEl, {
+    sendButtonText: sendButton ? semaiGetElementActionText(sendButton) : ""
+  });
+
+  semaiTriggerComposeSend(composeEl);
+  if (await semaiWaitForComposeToClose(composeEl, 4000)) {
+    semaiLogComposeSnapshot("keyboard_send_closed", composeEl);
+    return;
+  }
 
   if (sendButton) {
     semaiActivateElement(sendButton);
     if (await semaiWaitForComposeToClose(composeEl, 4000)) {
+      semaiLogComposeSnapshot("send_button_closed", composeEl);
       return;
     }
   }
 
-  semaiTriggerComposeSend(composeEl);
-  if (await semaiWaitForComposeToClose(composeEl, 4000)) {
-    return;
-  }
-
+  semaiLogComposeSnapshot("send_failed_still_open", composeEl);
   throw new Error("Reply all draft opened, but Outlook did not send it.");
 }
 
@@ -317,10 +910,10 @@ async function semaiOpenReplyAllCompose() {
   let composeEl = getComposeElement();
   if (composeEl) return composeEl;
 
-  const replyAllBtn = semaiFindReplyAllButton();
-  if (replyAllBtn) {
-    semaiActivateElement(replyAllBtn);
+  const openedReplyAll = await semaiEnsureReplyAllMode();
+  if (openedReplyAll) {
     composeEl = await semaiWaitForComposeElement();
+    semaiLogComposeSnapshot("reply_all_opened_direct", composeEl);
     return composeEl;
   }
 
@@ -331,9 +924,9 @@ async function semaiOpenReplyAllCompose() {
 
   semaiActivateElement(replyBtn);
   composeEl = await semaiWaitForComposeElement();
+  semaiLogComposeSnapshot("reply_opened_fallback", composeEl);
 
   // Some Outlook thread states only expose a generic Reply action until the compose UI opens.
-  await semaiEnsureReplyAllMode();
   return composeEl;
 }
 
@@ -345,12 +938,19 @@ async function semaiInsertComposeText(composeEl, text) {
   await new Promise(resolve => window.setTimeout(resolve, 300));
 
   composeEl.focus();
+  semaiLogComposeSnapshot("before_insert", composeEl, { draftLength: text.length });
 
-  // execCommand('selectAll') uses the browser's own editor selection mechanism,
-  // which stays in sync with execCommand('insertText'). This is more reliable than
-  // building a Range manually — both commands go through the same beforeinput → input
-  // pipeline that Outlook listens to for keeping its internal model up to date.
-  document.execCommand("selectAll", false, null);
+  const selection = window.getSelection();
+  if (selection) {
+    const range = document.createRange();
+    range.selectNodeContents(composeEl);
+    range.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }
+
+  // Keep insertion scoped to the compose element instead of relying on a
+  // document-wide selectAll, which can target the wrong Outlook surface.
   const inserted = document.execCommand("insertText", false, text);
 
   if (!inserted) {
@@ -370,6 +970,12 @@ async function semaiInsertComposeText(composeEl, text) {
     composeEl.appendChild(fragment);
     composeEl.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: text }));
   }
+
+  // Outlook can render the inserted text before its internal draft model is ready.
+  // Give the compose pipeline a brief moment to commit the body before we try to send.
+  await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  await new Promise((resolve) => window.setTimeout(resolve, 180));
+  semaiLogComposeSnapshot("after_insert", composeEl, { draftLength: text.length });
 }
 
 async function semaiDraftReplyAllFromChat() {
@@ -401,6 +1007,82 @@ async function semaiDraftReplyAllFromChat() {
   }
 }
 
+// Try the REST API path first. Returns true on success, false if we should
+// fall back to the compose-UI path. Never throws — any error is logged and
+// the caller proceeds with the fallback.
+async function semaiTryReplyAllViaRestApi(draft) {
+  if (!SEMAI_USE_REST_API_REPLY) {
+    semaiDebugLine("REST: flag off → compose-UI fallback");
+    semaiNativeLog("[semai-rest] feature flag off; using compose-UI fallback");
+    return false;
+  }
+  if (!semaiCachedOutlookToken) {
+    semaiDebugLine("REST: ✗ no token yet → compose-UI fallback");
+    semaiNativeLog("[semai-rest] no token captured yet; using compose-UI fallback");
+    return false;
+  }
+
+  semaiDebugLine(`REST: token OK (len=${semaiCachedOutlookToken.length})`);
+
+  // Pick the last (most-recent) message in the active thread — that's what
+  // "Reply all" targets in Outlook's UI.
+  const overlay = document.getElementById("semai-chat-overlay");
+  const messages = overlay?._semaiMessages || [];
+  const lastMessage = messages[messages.length - 1];
+  const bodyEl = lastMessage?.sourceBodyEl
+    || document.querySelectorAll('[aria-label="Message body"]:not([contenteditable])').item(
+         document.querySelectorAll('[aria-label="Message body"]:not([contenteditable])').length - 1
+       );
+
+  if (!(bodyEl instanceof Element)) {
+    semaiDebugLine("REST: ✗ no body element → compose-UI fallback");
+    semaiNativeLog("[semai-rest] no message body element found; using compose-UI fallback");
+    return false;
+  }
+
+  // Step 1: try DOM extraction. Older Outlook builds stamped IDs into
+  // attributes; modern builds keep them in React state, so this often misses.
+  let messageId = semaiExtractMessageId(bodyEl);
+
+  // Step 2: if DOM had nothing, ask the API. Pass the full thread messages
+  // so the resolver can match against any of them — the OLDER messages are
+  // most likely to already be indexed and least likely to collide with the
+  // user's just-typed draft.
+  if (!messageId) {
+    try {
+      semaiDebugLine(`REST: resolving msgId via API (using ${messages.length} thread messages)…`);
+      messageId = await semaiResolveMessageIdViaRest(messages);
+    } catch (err) {
+      const msg = err && err.message ? err.message : String(err);
+      semaiDebugLine(`REST: ✗ resolver failed: ${msg.slice(0, 100)}`);
+      semaiNativeLog(`[semai-rest] resolver failed: ${msg}; using compose-UI fallback`);
+      return false;
+    }
+  }
+
+  if (!messageId) {
+    semaiDebugLine("REST: ✗ no message ID after DOM + API resolve → fallback");
+    semaiNativeLog("[semai-rest] could not extract or resolve message ID; using compose-UI fallback");
+    return false;
+  }
+
+  semaiDebugLine(`REST: msgId=${messageId.slice(0, 20)}…`);
+
+  try {
+    semaiDebugLine("REST: POSTing replyAll…");
+    semaiNativeLog(`[semai-rest] POSTing replyAll for messageId="${messageId.slice(0, 24)}…" draftLen=${draft.length}`);
+    await semaiPostOutlookReplyAll(messageId, draft);
+    semaiDebugLine("REST: ✓ sent via API — no draft created");
+    semaiNativeLog("[semai-rest] replyAll succeeded via REST API (no draft created)");
+    return true;
+  } catch (err) {
+    const msg = err && err.message ? err.message : String(err);
+    semaiDebugLine(`REST: ✗ replyAll failed: ${msg.slice(0, 100)}`);
+    semaiNativeLog(`[semai-rest] replyAll REST call failed: ${msg}; using compose-UI fallback`);
+    return false;
+  }
+}
+
 async function semaiSendReplyAllFromChat() {
   const input = document.getElementById("semai-chat-reply-input");
   const draftBtn = document.getElementById("semai-chat-reply-draft-btn");
@@ -418,11 +1100,26 @@ async function semaiSendReplyAllFromChat() {
   if (status) status.textContent = "Sending Reply all…";
 
   try {
-    const composeEl = await semaiOpenReplyAllCompose();
-    await semaiInsertComposeText(composeEl, draft);
-    // Brief pause so Outlook processes the input event before the Send button is clicked.
-    await new Promise(resolve => window.setTimeout(resolve, 100));
-    await semaiSendCompose(composeEl);
+    // Attempt REST API path first — sends immediately without ever opening the
+    // compose UI, so Outlook's autosave never creates an empty draft. If
+    // anything goes wrong we silently fall back to the compose-UI flow.
+    const restOk = await semaiTryReplyAllViaRestApi(draft);
+
+    if (!restOk) {
+      const composeEl = await semaiOpenReplyAllCompose();
+      await semaiInsertComposeText(composeEl, draft);
+      semaiLogComposeSnapshot("before_chat_send", composeEl, { draftLength: draft.length });
+      await new Promise(resolve => window.setTimeout(resolve, 100));
+      await semaiSendCompose(composeEl);
+      // NOTE: previously we called semaiDismissLeftoverEmptyComposeTwice() here
+      // to sweep any leftover empty compose panel. That cleanup was the source
+      // of the "Delete this draft?" confirmation prompt — Outlook gates its
+      // Discard button behind a confirm dialog. After Outlook's native Send,
+      // the compose UI should tear itself down on its own, exactly as it does
+      // for a manual click. We now trust that native flow and do nothing
+      // extra; if anything Outlook-side truly needs to be closed, that is
+      // Outlook's business to handle.
+    }
 
     if (status) status.textContent = "Reply all sent.";
     if (input) input.value = "";
@@ -464,6 +1161,10 @@ const SEMAI_DEBUG = false;
 const SEMAI_AI_AGENT_ENABLED = false;
 const SEMAI_CALIBRATION_STORAGE_KEY = "semaiSenderCalibration";
 const SEMAI_PANEL_POSITION_STORAGE_KEY = "semaiPanelPosition";
+const SEMAI_CHAT_UI_SETTINGS_STORAGE_KEY = "semaiChatUiSettings";
+const SEMAI_CHAT_FONT_SIZE_MIN = 11;
+const SEMAI_CHAT_FONT_SIZE_MAX = 20;
+const SEMAI_CHAT_FONT_SIZE_DEFAULT = 13;
 
 let semaiSavedSelection = null;
 let semaiCalibrationState = null;
@@ -985,6 +1686,94 @@ let semaiReportModeOverlay = null;
 let semaiReportPopoverEl = null;
 let semaiReportMissedBodies = [];
 let semaiReportHoverOriginalBody = null;
+let semaiChatUiSettings = semaiGetChatUiSettings();
+
+function semaiNormalizeChatUiSettings(settings) {
+  const rawFontSize = Number(settings?.fontSize);
+  const fontSize = Number.isFinite(rawFontSize)
+    ? Math.min(SEMAI_CHAT_FONT_SIZE_MAX, Math.max(SEMAI_CHAT_FONT_SIZE_MIN, Math.round(rawFontSize)))
+    : SEMAI_CHAT_FONT_SIZE_DEFAULT;
+
+  return { fontSize };
+}
+
+function semaiGetChatUiSettings() {
+  try {
+    const raw = window.localStorage.getItem(SEMAI_CHAT_UI_SETTINGS_STORAGE_KEY);
+    return semaiNormalizeChatUiSettings(raw ? JSON.parse(raw) : null);
+  } catch (_) {
+    return semaiNormalizeChatUiSettings(null);
+  }
+}
+
+function semaiPersistChatUiSettings(settings) {
+  try {
+    window.localStorage.setItem(SEMAI_CHAT_UI_SETTINGS_STORAGE_KEY, JSON.stringify(settings));
+  } catch (error) {
+    console.warn("[semai] Failed to persist chat UI settings", error);
+  }
+}
+
+function semaiApplyChatUiSettings(overlay) {
+  if (!(overlay instanceof HTMLElement)) return;
+  const settings = semaiNormalizeChatUiSettings(semaiChatUiSettings);
+  overlay.style.setProperty("--semai-chat-font-size", `${settings.fontSize}px`);
+
+  const slider = overlay.querySelector(".semai-chat-settings-slider");
+  const value = overlay.querySelector(".semai-chat-settings-value");
+  if (slider instanceof HTMLInputElement) {
+    slider.value = String(settings.fontSize);
+  }
+  if (value) {
+    value.textContent = `${settings.fontSize}px`;
+  }
+}
+
+function semaiUpdateChatUiSettings(nextPartialSettings) {
+  semaiChatUiSettings = semaiNormalizeChatUiSettings({
+    ...semaiChatUiSettings,
+    ...nextPartialSettings
+  });
+  semaiPersistChatUiSettings(semaiChatUiSettings);
+
+  const overlay = document.getElementById("semai-chat-overlay");
+  if (overlay) {
+    semaiApplyChatUiSettings(overlay);
+  }
+}
+
+function semaiCloseChatSettingsPopover(overlay) {
+  if (!(overlay instanceof HTMLElement)) return;
+  const popover = overlay.querySelector(".semai-chat-settings-popover");
+  const toggleBtn = overlay.querySelector(".semai-chat-settings-toggle");
+  if (!popover || !toggleBtn) return;
+
+  popover.hidden = true;
+  toggleBtn.setAttribute("aria-expanded", "false");
+}
+
+function semaiOpenChatSettingsPopover(overlay) {
+  if (!(overlay instanceof HTMLElement)) return;
+  const popover = overlay.querySelector(".semai-chat-settings-popover");
+  const toggleBtn = overlay.querySelector(".semai-chat-settings-toggle");
+  if (!popover || !toggleBtn) return;
+
+  semaiApplyChatUiSettings(overlay);
+  popover.hidden = false;
+  toggleBtn.setAttribute("aria-expanded", "true");
+}
+
+function semaiToggleChatSettingsPopover(overlay) {
+  if (!(overlay instanceof HTMLElement)) return;
+  const popover = overlay.querySelector(".semai-chat-settings-popover");
+  if (!popover) return;
+
+  if (popover.hidden) {
+    semaiOpenChatSettingsPopover(overlay);
+  } else {
+    semaiCloseChatSettingsPopover(overlay);
+  }
+}
 
 // Deterministic avatar colour from name — 8-colour palette
 const SEMAI_AVATAR_COLORS = [
@@ -2697,20 +3486,66 @@ function semaiExtractThreadMessages() {
 
 // Get the conversation subject
 function semaiGetThreadSubject() {
+  const readingPane = semaiGetReadingPane();
+  const searchRoots = [readingPane, document].filter(Boolean);
   const selectors = [
     '[data-testid="subjectLine"]',
-    '[class*="subjectLine" i]',
+    '[data-testid*="subject" i]',
+    '[aria-label="Subject"]',
+    '[aria-label^="Subject" i]',
+    'h1[class*="subject" i]',
     'h2[class*="subject" i]',
-    '[role="heading"][class*="subject" i]',
+    '[role="heading"][data-testid*="subject" i]',
+    '[role="heading"][class*="subject" i]'
   ];
-  for (const sel of selectors) {
-    const el = document.querySelector(sel);
-    if (el) {
-      const text = (el.innerText || el.textContent || "").trim();
-      if (text) return text;
+
+  const normalizeSubject = (value) => (value || "")
+    .replace(/^subject:\s*/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  const isLikelySubject = (text, el) => {
+    const normalized = normalizeSubject(text);
+    if (!normalized) return false;
+    if (normalized.length < 2) return false;
+
+    const attrText = [
+      el?.getAttribute?.("data-testid") || "",
+      el?.getAttribute?.("aria-label") || "",
+      el?.className || ""
+    ].join(" ").toLowerCase();
+
+    if (attrText.includes("subject")) return true;
+    if (/^(from|to|cc|bcc):/i.test(normalized)) return false;
+    if (/^[^@]+@[^@]+\.[^@]+$/.test(normalized)) return false;
+
+    return normalized.split(/\s+/).length >= 2 || /[—\-:()[\]]/.test(normalized);
+  };
+
+  for (const root of searchRoots) {
+    for (const sel of selectors) {
+      const candidates = Array.from(root.querySelectorAll(sel));
+      for (const el of candidates) {
+        const text = normalizeSubject(
+          el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement
+            ? el.value
+            : (el.innerText || el.textContent || "")
+        );
+        if (isLikelySubject(text, el)) {
+          return text;
+        }
+      }
     }
   }
-  return document.title.replace(/- Outlook.*$/i, "").trim() || "Conversation";
+
+  const title = (document.title || "").trim();
+  const titleCandidates = title
+    .split(/\s+-\s+/)
+    .map((part) => normalizeSubject(part))
+    .filter(Boolean)
+    .filter((part) => !/^(mail|outlook|inbox)$/i.test(part));
+
+  return titleCandidates[0] || "Conversation";
 }
 
 // Build the chat overlay DOM
@@ -2727,10 +3562,64 @@ function semaiCreateChatOverlay(messages, subject) {
   header.className = "semai-chat-header";
   header.innerHTML = `
     <span class="semai-chat-subject">${semaiEscapeHtml(subject)}</span>
-    <button class="semai-chat-close" type="button">✕ Hide chat view</button>
+    <div class="semai-chat-header-actions">
+      <div class="semai-chat-settings">
+        <button
+          class="semai-chat-settings-toggle"
+          type="button"
+          aria-label="Open chat settings"
+          aria-expanded="false"
+          title="Chat settings"
+        >⚙</button>
+        <div class="semai-chat-settings-popover" hidden>
+          <div class="semai-chat-settings-title">Settings</div>
+          <label class="semai-chat-settings-control" for="semai-chat-font-size-slider">
+            <span>Font size</span>
+            <span class="semai-chat-settings-value">${semaiChatUiSettings.fontSize}px</span>
+          </label>
+          <input
+            id="semai-chat-font-size-slider"
+            class="semai-chat-settings-slider"
+            type="range"
+            min="${SEMAI_CHAT_FONT_SIZE_MIN}"
+            max="${SEMAI_CHAT_FONT_SIZE_MAX}"
+            step="1"
+            value="${semaiChatUiSettings.fontSize}"
+          />
+        </div>
+      </div>
+      <button class="semai-chat-close" type="button">✕ Hide chat view</button>
+    </div>
   `;
   header.querySelector(".semai-chat-close").addEventListener("click", semaiDeactivateChatView);
   overlay.appendChild(header);
+  semaiApplyChatUiSettings(overlay);
+
+  const settingsToggle = header.querySelector(".semai-chat-settings-toggle");
+  const settingsPopover = header.querySelector(".semai-chat-settings-popover");
+  const settingsSlider = header.querySelector(".semai-chat-settings-slider");
+
+  settingsToggle?.addEventListener("click", (event) => {
+    event.stopPropagation();
+    semaiToggleChatSettingsPopover(overlay);
+  });
+
+  settingsPopover?.addEventListener("click", (event) => {
+    event.stopPropagation();
+  });
+
+  settingsSlider?.addEventListener("input", (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLInputElement)) return;
+    semaiUpdateChatUiSettings({ fontSize: target.value });
+  });
+
+  overlay.addEventListener("click", (event) => {
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    if (target.closest(".semai-chat-settings")) return;
+    semaiCloseChatSettingsPopover(overlay);
+  });
 
   const content = document.createElement("div");
   content.className = "semai-chat-content";
@@ -2804,6 +3693,7 @@ function semaiCreateChatOverlay(messages, subject) {
       <div id="semai-chat-reply-status" class="semai-chat-reply-status">
         Chat view is on. Use the eye button to switch back to regular Outlook.
       </div>
+      <pre id="semai-chat-reply-debug" class="semai-chat-reply-debug"></pre>
       <div class="semai-chat-reply-actions">
         <button
           id="semai-chat-report-issue-btn"
@@ -2893,6 +3783,7 @@ function semaiUpdateOverlayViewToggle(overlay) {
 function semaiToggleOverlayView(overlay) {
   if (!overlay) return;
 
+  semaiCloseChatSettingsPopover(overlay);
   overlay.dataset.viewMode = overlay.dataset.viewMode === "real" ? "chat" : "real";
   semaiUpdateOverlayViewToggle(overlay);
 }

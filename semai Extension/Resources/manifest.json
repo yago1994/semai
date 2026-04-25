@@ -50,5 +50,16 @@
     "https://api.anthropic.com/*",
     "https://script.google.com/*",
     "https://script.googleusercontent.com/*"
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["pageWorldHook.js"],
+      "matches": [
+        "https://outlook.office.com/*",
+        "https://outlook.live.com/*",
+        "https://outlook.office365.com/*",
+        "https://outlook.cloud.microsoft/*"
+      ]
+    }
   ]
 }

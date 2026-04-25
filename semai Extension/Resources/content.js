@@ -6,6 +6,23 @@
   const INJECTED_KEY = '__semai_injected_patches__';
   const PATCH_DEBUG = false;
 
+  // Inject the page-world token hook BEFORE Outlook's SPA bundles execute.
+  // It wraps window.fetch / XMLHttpRequest in the page's main world (our
+  // content-script world is isolated, so hooking fetch there accomplishes
+  // nothing). The hook publishes captured bearer tokens via CustomEvent,
+  // which contentScript.js listens for.
+  try {
+    const hookUrl = chrome.runtime.getURL('pageWorldHook.js');
+    const hookScript = document.createElement('script');
+    hookScript.src = hookUrl;
+    hookScript.async = false;
+    hookScript.dataset.semai = 'page-world-hook';
+    hookScript.addEventListener('load', () => hookScript.remove());
+    (document.head || document.documentElement).appendChild(hookScript);
+  } catch (e) {
+    console.warn('[semai] Failed to inject page-world hook:', e);
+  }
+
   function semaiPatchDebug(...args) {
     if (PATCH_DEBUG) {
       console.warn(...args);

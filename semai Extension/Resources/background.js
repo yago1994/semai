@@ -249,6 +249,46 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
+  // ── Outlook REST API proxy ──
+  // Safari content-script fetches to outlook.office.com/api/* fail with
+  // "Load failed" (cross-origin block, even when same-origin to the page).
+  // Background workers DO have host_permissions for outlook.office.com, so
+  // we route REST calls through here. The content script captures the bearer
+  // token via pageWorldHook.js and sends it along with the request.
+  if (msg.type === 'OUTLOOK_API_CALL') {
+    const { url, method, token, body } = msg.payload || {};
+    if (!url || !token) {
+      sendResponse({ ok: false, error: 'Missing url or token' });
+      return false;
+    }
+    (async () => {
+      try {
+        const headers = {
+          'Authorization': token,
+          'Accept': 'application/json'
+        };
+        if (body !== undefined && body !== null) {
+          headers['Content-Type'] = 'application/json';
+        }
+        const res = await fetch(url, {
+          method: method || 'GET',
+          headers,
+          body: body !== undefined && body !== null ? JSON.stringify(body) : undefined
+        });
+        const text = await res.text();
+        sendResponse({
+          ok: res.ok,
+          status: res.status,
+          statusText: res.statusText,
+          body: text
+        });
+      } catch (err) {
+        sendResponse({ ok: false, status: 0, error: err && err.message ? err.message : String(err) });
+      }
+    })();
+    return true; // keep channel open for async response
+  }
+
   // ── Patch injection (bypasses page CSP via chrome.scripting) ──
   if (msg.type === 'INJECT_PATCH') {
     const { patchType, patchCode } = msg.payload || {};

@@ -344,6 +344,7 @@ body.semai-calibrating * {
   z-index: 999998;
   display: flex;
   flex-direction: column;
+  --semai-chat-font-size: 13px;
   background: #f1f5f9;
   font-family: system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Text",
     "Segoe UI", sans-serif;
@@ -364,6 +365,8 @@ body.semai-calibrating * {
 /* Header */
 .semai-chat-header {
   display: flex;
+  position: relative;
+  z-index: 2;
   align-items: center;
   justify-content: space-between;
   padding: 10px 16px;
@@ -383,6 +386,91 @@ body.semai-calibrating * {
   white-space: nowrap;
   flex: 1;
   margin-right: 12px;
+}
+
+.semai-chat-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.semai-chat-settings {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.semai-chat-settings-toggle {
+  width: 30px;
+  height: 30px;
+  border: none;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.06);
+  color: #475569;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s ease, color 0.15s ease, transform 0.15s ease;
+}
+
+.semai-chat-settings-toggle:hover,
+.semai-chat-settings-toggle[aria-expanded="true"] {
+  background: rgba(99, 102, 241, 0.14);
+  color: #4f46e5;
+}
+
+.semai-chat-settings-toggle:active {
+  transform: scale(0.96);
+}
+
+.semai-chat-settings-popover {
+  position: absolute;
+  z-index: 3;
+  top: calc(100% + 8px);
+  right: 0;
+  width: min(220px, calc(100vw - 32px));
+  padding: 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(15, 23, 42, 0.1);
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: 0 16px 36px rgba(15, 23, 42, 0.16);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+
+.semai-chat-settings-popover[hidden] {
+  display: none;
+}
+
+.semai-chat-settings-title {
+  margin-bottom: 10px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.semai-chat-settings-control {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #334155;
+}
+
+.semai-chat-settings-value {
+  color: #4f46e5;
+}
+
+.semai-chat-settings-slider {
+  width: 100%;
+  margin: 0;
+  accent-color: #6366f1;
 }
 
 .semai-chat-close {
@@ -486,6 +574,7 @@ body.semai-calibrating * {
   max-width: 70%;
   padding: 8px 12px;
   border-radius: 16px;
+  font-size: var(--semai-chat-font-size, 13px);
   line-height: 1.45;
   word-break: break-word;
 }
@@ -512,7 +601,7 @@ body.semai-calibrating * {
 
 /* Message body inside bubble */
 .semai-chat-body {
-  font-size: 13px;
+  font-size: inherit;
   cursor: text;
   user-select: text;
   -webkit-user-select: text;
@@ -937,6 +1026,28 @@ body.semai-calibrating * {
 
 .semai-chat-reply-status[data-tone="error"] {
   color: #b91c1c;
+}
+
+.semai-chat-reply-debug {
+  display: block;
+  margin: 6px 0 0;
+  padding: 6px 8px;
+  background: #1a1a1a;
+  color: #a8d8a8;
+  font-family: monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  border-radius: 4px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  min-height: 18px;
+  max-height: 160px;
+  overflow-y: auto;
+  overflow-x: auto;
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
+  pointer-events: all;
 }
 
 .semai-reading-pane-spacer {
