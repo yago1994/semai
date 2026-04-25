@@ -3,7 +3,6 @@ function show(enabled, useSettingsInsteadOfPreferences) {
         document.getElementsByClassName('state-on')[0].innerText = "remou’s extension is currently on. You can turn it off in the Extensions section of Safari Settings.";
         document.getElementsByClassName('state-off')[0].innerText = "remou’s extension is currently off. You can turn it on in the Extensions section of Safari Settings.";
         document.getElementsByClassName('state-unknown')[0].innerText = "You can turn on remou’s extension in the Extensions section of Safari Settings.";
-        document.getElementsByClassName('open-preferences')[0].innerText = "Quit and Open Safari Settings…";
     }
 
     if (typeof enabled === "boolean") {
@@ -71,5 +70,7 @@ function reportIssueResult(success, message) {
     }
 }
 
-document.querySelector("button.open-preferences").addEventListener("click", openPreferences);
+document.querySelectorAll("button.open-preferences").forEach((button) => {
+    button.addEventListener("click", openPreferences);
+});
 reportIssueButton.addEventListener("click", submitReportIssue);

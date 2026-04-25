@@ -144,21 +144,104 @@ function semaiExtractMessageId(bodyEl) {
   return "";
 }
 
-// Wrapper that routes Outlook REST API calls through the background service
-// worker. Safari's content-script context blocks Authorization-bearing fetches
-// to outlook.office.com with "Load failed", but background workers have full
-// host_permissions and succeed. Returns { ok, status, body, error }.
-function semaiCallOutlookApi(url, method, body) {
-  return new Promise((resolve) => {
-    if (!semaiCachedOutlookToken) {
-      resolve({ ok: false, status: 0, error: "No Outlook bearer token captured yet." });
-      return;
+// =====================================================================
+// TOKEN LIFECYCLE — handles expiry + 401 recovery (gotcha #4)
+// ---------------------------------------------------------------------
+// Outlook bearer tokens are JWTs with a ~60min lifetime. The page-world
+// hook keeps re-capturing fresh tokens as Outlook's SPA polls its own
+// backends, but if the user wakes their laptop after a long idle the
+// cached token may be stale. We protect with two layers:
+//
+//   (a) PROACTIVE: every time semaiCallOutlookApi is about to use the
+//       cached token, we decode the JWT exp claim and discard the cache
+//       if it expires within SEMAI_TOKEN_EXPIRY_BUFFER_MS. The hook
+//       will refresh it on Outlook's next backend poll.
+//
+//   (b) REACTIVE: if a request returns 401 anyway (clock skew, audience
+//       mismatch, server-side revoke), we invalidate the cache and wait
+//       up to SEMAI_TOKEN_REFRESH_TIMEOUT_MS for the page-world hook to
+//       publish a different token, then retry the request once.
+// =====================================================================
+const SEMAI_TOKEN_EXPIRY_BUFFER_MS = 60 * 1000;
+const SEMAI_TOKEN_REFRESH_TIMEOUT_MS = 5000;
+const SEMAI_TOKEN_REFRESH_POLL_MS = 200;
+
+// Decodes the JWT payload's `exp` claim and returns ms-since-epoch, or 0 if
+// the token is malformed / non-JWT. We don't verify the signature — we just
+// read the unprotected payload to know when to give up on the token.
+function semaiDecodeJwtExp(token) {
+  if (typeof token !== "string" || !token) return 0;
+  const stripped = token.replace(/^Bearer\s+/i, "").trim();
+  const segments = stripped.split(".");
+  if (segments.length < 2) return 0;
+  try {
+    const b64url = segments[1];
+    const b64 = b64url.replace(/-/g, "+").replace(/_/g, "/");
+    const padded = b64 + "=".repeat((4 - (b64.length % 4)) % 4);
+    const json = atob(padded);
+    const obj = JSON.parse(json);
+    return typeof obj.exp === "number" ? obj.exp * 1000 : 0;
+  } catch (_) {
+    return 0;
+  }
+}
+
+// Returns the cached token only if it is still safely usable. If it is
+// within SEMAI_TOKEN_EXPIRY_BUFFER_MS of expiring (or already expired),
+// we wipe the cache and return "" — caller will treat this as "no token
+// available" and either refuse the call or wait for a fresh capture.
+function semaiGetUsableToken() {
+  if (!semaiCachedOutlookToken) return "";
+  const expMs = semaiDecodeJwtExp(semaiCachedOutlookToken);
+  if (expMs > 0) {
+    const remainMs = expMs - Date.now();
+    if (remainMs < SEMAI_TOKEN_EXPIRY_BUFFER_MS) {
+      semaiDebugLine(`REST: cached token expires in ${Math.round(remainMs / 1000)}s — discarding`);
+      semaiCachedOutlookToken = "";
+      return "";
     }
+  }
+  return semaiCachedOutlookToken;
+}
+
+// Invalidates the current cached token and waits up to timeoutMs for the
+// page-world hook to publish a *different* token. Resolves true if a
+// fresh token arrives; false on timeout. Outlook's SPA polls its own
+// backends every few seconds for new mail / presence / focused-inbox,
+// so a fresh token typically arrives within 1-3s after we wipe ours.
+function semaiWaitForFreshToken(timeoutMs = SEMAI_TOKEN_REFRESH_TIMEOUT_MS) {
+  const stale = semaiCachedOutlookToken;
+  semaiCachedOutlookToken = "";
+  semaiDebugLine("REST: invalidated cached token, waiting for fresh capture…");
+  const start = Date.now();
+  return new Promise((resolve) => {
+    const tick = () => {
+      if (semaiCachedOutlookToken && semaiCachedOutlookToken !== stale) {
+        semaiDebugLine(`REST: ✓ fresh token captured after ${Date.now() - start}ms`);
+        resolve(true);
+        return;
+      }
+      if (Date.now() - start >= timeoutMs) {
+        semaiDebugLine(`REST: ✗ no fresh token after ${timeoutMs}ms`);
+        resolve(false);
+        return;
+      }
+      window.setTimeout(tick, SEMAI_TOKEN_REFRESH_POLL_MS);
+    };
+    tick();
+  });
+}
+
+// One-shot bridge to the background service worker. Pulled out of
+// semaiCallOutlookApi so the retry path can re-issue the same request
+// with a fresh token without recursing.
+function semaiSendOutlookApiCallOnce(url, method, body, token) {
+  return new Promise((resolve) => {
     try {
       chrome.runtime.sendMessage(
         {
           type: "OUTLOOK_API_CALL",
-          payload: { url, method: method || "GET", token: semaiCachedOutlookToken, body: body || null }
+          payload: { url, method: method || "GET", token, body: body || null }
         },
         (response) => {
           if (chrome.runtime.lastError) {
@@ -172,6 +255,42 @@ function semaiCallOutlookApi(url, method, body) {
       resolve({ ok: false, status: 0, error: err && err.message ? err.message : String(err) });
     }
   });
+}
+
+// Wrapper that routes Outlook REST API calls through the background service
+// worker. Safari's content-script context blocks Authorization-bearing fetches
+// to outlook.office.com with "Load failed", but background workers have full
+// host_permissions and succeed. Returns { ok, status, body, error }.
+//
+// Retries once on 401 after invalidating the cached token and waiting for a
+// fresh one — see TOKEN LIFECYCLE block above.
+async function semaiCallOutlookApi(url, method, body) {
+  const token = semaiGetUsableToken();
+  if (!token) {
+    return { ok: false, status: 0, error: "No Outlook bearer token captured yet." };
+  }
+
+  const response = await semaiSendOutlookApiCallOnce(url, method, body, token);
+  if (response.status !== 401) {
+    return response;
+  }
+
+  // Reactive refresh: 401 means our token is stale. Wipe cache, wait briefly
+  // for the page-world hook to catch a new one, retry once.
+  semaiDebugLine("REST: ✗ 401 — token may be stale, refreshing");
+  const gotFresh = await semaiWaitForFreshToken();
+  if (!gotFresh) {
+    return response;
+  }
+
+  semaiDebugLine("REST: retrying request with fresh token…");
+  const retry = await semaiSendOutlookApiCallOnce(url, method, body, semaiCachedOutlookToken);
+  if (retry.status === 401) {
+    semaiDebugLine("REST: ✗ still 401 after retry — giving up");
+  } else if (retry.ok) {
+    semaiDebugLine("REST: ✓ retry succeeded after token refresh");
+  }
+  return retry;
 }
 
 async function semaiPostOutlookReplyAll(messageId, comment) {
@@ -1214,6 +1333,47 @@ async function semaiDraftReplyAllFromChat() {
   }
 }
 
+// =====================================================================
+// MISSING-TOKEN HINT (gotcha #9 — SPA reload race on first install)
+// ---------------------------------------------------------------------
+// If the extension installs while an Outlook tab is already open, the
+// page-world hook can only intercept fetches that happen AFTER it
+// injects — so the first reply attempt may have no token cached and
+// silently fall through to the compose-UI path (which leaves a draft).
+//
+// Outlook's SPA usually mints a fresh Bearer-tagged fetch within ~30s
+// (mail polling, presence, focused-inbox), so the race resolves on its
+// own. But until it does, the user can't tell why their reply left a
+// draft. We show a one-shot inline banner above the reply input the
+// first time we hit this state.
+// =====================================================================
+let semaiMissingTokenHintShown = false;
+function semaiShowMissingTokenHint() {
+  if (semaiMissingTokenHintShown) return;
+  semaiMissingTokenHintShown = true;
+  const composer = document.querySelector(".semai-chat-composer");
+  if (!composer) return;
+  if (composer.querySelector(".semai-chat-token-hint")) return;
+
+  const banner = document.createElement("div");
+  banner.className = "semai-chat-token-hint";
+  banner.setAttribute("role", "status");
+
+  const text = document.createElement("span");
+  text.textContent = "Tip: reload this Outlook tab to send replies without leaving a draft.";
+  banner.appendChild(text);
+
+  const dismiss = document.createElement("button");
+  dismiss.type = "button";
+  dismiss.setAttribute("aria-label", "Dismiss");
+  dismiss.textContent = "✕";
+  dismiss.addEventListener("click", () => banner.remove());
+  banner.appendChild(dismiss);
+
+  composer.insertBefore(banner, composer.firstChild);
+  window.setTimeout(() => banner.remove(), 30000);
+}
+
 // Try the REST API path first. Returns true on success, false if we should
 // fall back to the compose-UI path. Never throws — any error is logged and
 // the caller proceeds with the fallback.
@@ -1226,6 +1386,7 @@ async function semaiTryReplyAllViaRestApi(draft) {
   if (!semaiCachedOutlookToken) {
     semaiDebugLine("REST: ✗ no token yet → compose-UI fallback");
     semaiNativeLog("[semai-rest] no token captured yet; using compose-UI fallback");
+    semaiShowMissingTokenHint();
     return false;
   }
 
@@ -1369,6 +1530,7 @@ const SEMAI_AI_AGENT_ENABLED = false;
 const SEMAI_CALIBRATION_STORAGE_KEY = "semaiSenderCalibration";
 const SEMAI_PANEL_POSITION_STORAGE_KEY = "semaiPanelPosition";
 const SEMAI_CHAT_UI_SETTINGS_STORAGE_KEY = "semaiChatUiSettings";
+const SEMAI_PANEL_SETTINGS_STORAGE_KEY = "semaiPanelSettings";
 const SEMAI_CHAT_FONT_SIZE_MIN = 12;
 const SEMAI_CHAT_FONT_SIZE_MAX = 24;
 const SEMAI_CHAT_FONT_SIZE_STEP = 2;
@@ -1377,6 +1539,8 @@ const SEMAI_CHAT_FONT_SIZE_DEFAULT = 14;
 let semaiSavedSelection = null;
 let semaiCalibrationState = null;
 let semaiCalibrationHoverEl = null;
+let semaiCalibrationCandidateEls = [];
+let semaiOnboardingState = null;
 let semaiAutoOpenSuppressedSignature = "";
 let semaiPanelDragState = null;
 
@@ -1742,6 +1906,7 @@ function createPanel() {
 
   const panel = document.createElement("div");
   panel.id = "semai-panel";
+  const calibration = semaiGetCalibration();
 
   panel.innerHTML = `
     <div class="semai-header">
@@ -1750,14 +1915,46 @@ function createPanel() {
         <div class="semai-title">REMOU</div>
       </div>
       <div class="semai-header-actions">
-        <button
-          class="semai-settings-btn"
-          type="button"
-          aria-label="Open Remou setup"
-          title="Open Remou setup"
-        >
-          ⚙
-        </button>
+        <div class="semai-settings">
+          <button
+            class="semai-settings-btn"
+            type="button"
+            aria-label="Open Remou settings"
+            aria-expanded="false"
+            title="Open Remou settings"
+          >
+            ⚙
+          </button>
+          <div class="semai-settings-popover" role="menu" hidden>
+            <div class="semai-settings-title">Settings</div>
+            <label class="semai-settings-row">
+              <span class="semai-settings-row-label">
+                Hide signatures
+                <span class="semai-settings-row-hint">Collapse signatures with a "Show signature" toggle.</span>
+              </span>
+              <span class="semai-settings-switch">
+                <input
+                  class="semai-settings-signature-toggle"
+                  type="checkbox"
+                  ${semaiPanelSettings.signatureHidingEnabled ? "checked" : ""}
+                  aria-label="Hide signatures"
+                />
+                <span class="semai-settings-switch-track" aria-hidden="true"></span>
+              </span>
+            </label>
+            <button
+              class="semai-settings-about-btn"
+              type="button"
+            >
+              About
+            </button>
+            <hr class="semai-settings-divider" />
+            <button class="semai-calibrate-btn semai-settings-calibrate-btn" type="button">
+              ${calibration ? "Retrain sender detection" : "Set up Remou"}
+            </button>
+            <p id="semai-calibration-status" class="semai-calibration-status"></p>
+          </div>
+        </div>
         <button
           class="semai-toggle-btn"
           type="button"
@@ -1769,8 +1966,7 @@ function createPanel() {
     </div>
     <div class="semai-body">
       <button class="semai-chat-toggle-btn" type="button" style="display:none">Turn on chat view</button>
-      <button class="semai-calibrate-btn" type="button">Train sender detection</button>
-      <p id="semai-calibration-status" class="semai-calibration-status"></p>
+      ${!calibration ? `<button class="semai-calibrate-btn semai-calibrate-main-btn" type="button">Set up Remou</button>` : ""}
       ${SEMAI_AI_AGENT_ENABLED ? `
       <p class="semai-subtitle">
         Highlight text in your email and choose how you want it to sound.
@@ -1801,15 +1997,23 @@ function createPanel() {
 
   panel.addEventListener("click", (e) => {
     const target = e.target;
-    if (!(target instanceof HTMLButtonElement)) return;
+    if (!(target instanceof Element)) return;
 
-    if (target.classList.contains("semai-settings-btn")) {
+    if (target.closest(".semai-settings-btn")) {
+      semaiTogglePanelSettingsPopover(panel);
+      return;
+    }
+
+    if (target.closest(".semai-settings-about-btn")) {
+      semaiClosePanelSettingsPopover(panel);
       semaiOpenOnboardingAppWindow().catch((error) => {
         console.error("[semai] Failed to open onboarding app", error);
         semaiShowOnboardingModal();
       });
       return;
     }
+
+    if (!(target instanceof HTMLButtonElement)) return;
 
     // Handle collapse/expand toggle
     if (target.classList.contains("semai-toggle-btn")) {
@@ -1829,7 +2033,14 @@ function createPanel() {
     }
 
     if (target.classList.contains("semai-calibrate-btn")) {
+      semaiClosePanelSettingsPopover(panel);
       semaiShowOnboardingModal();
+      return;
+    }
+
+    // Clicks anywhere else inside the popover shouldn't bubble out to the
+    // global dismiss handler below.
+    if (target.closest(".semai-settings-popover")) {
       return;
     }
 
@@ -1852,19 +2063,20 @@ function createPanel() {
     }
   });
 
+  // Wire the signature-hiding checkbox in the settings popover.
+  const sigToggle = panel.querySelector(".semai-settings-signature-toggle");
+  if (sigToggle instanceof HTMLInputElement) {
+    sigToggle.addEventListener("change", () => {
+      semaiUpdatePanelSettings({ signatureHidingEnabled: sigToggle.checked });
+    });
+  }
+
   document.body.appendChild(panel);
   semaiRestorePanelPosition(panel);
   semaiEnablePanelDragging(panel);
   window.requestAnimationFrame(() => {
     semaiEnsurePanelVisible(panel, false);
   });
-  const calibration = semaiGetCalibration();
-  const calibrateBtn = panel.querySelector(".semai-calibrate-btn");
-  if (calibrateBtn) {
-    calibrateBtn.textContent = calibration
-      ? "Retrain sender detection"
-      : "Set up Remou";
-  }
   semaiUpdateCalibrationStatus(
     calibration
       ? "✓ Setup complete. You can retrain anytime."
@@ -1879,6 +2091,63 @@ function createPanel() {
 
   semaiLog("[semai] Panel created");
 }
+
+// ===== Panel settings popover (gear icon) =====
+function semaiOpenPanelSettingsPopover(panel) {
+  if (!(panel instanceof HTMLElement)) return;
+  const popover = panel.querySelector(".semai-settings-popover");
+  const button = panel.querySelector(".semai-settings-btn");
+  if (!popover || !button) return;
+  // Re-sync the checkbox in case the setting changed elsewhere.
+  const toggle = popover.querySelector(".semai-settings-signature-toggle");
+  if (toggle instanceof HTMLInputElement) {
+    toggle.checked = !!semaiPanelSettings.signatureHidingEnabled;
+  }
+  popover.hidden = false;
+  button.setAttribute("aria-expanded", "true");
+}
+
+function semaiClosePanelSettingsPopover(panel) {
+  if (!(panel instanceof HTMLElement)) return;
+  const popover = panel.querySelector(".semai-settings-popover");
+  const button = panel.querySelector(".semai-settings-btn");
+  if (!popover || !button) return;
+  popover.hidden = true;
+  button.setAttribute("aria-expanded", "false");
+}
+
+function semaiTogglePanelSettingsPopover(panel) {
+  if (!(panel instanceof HTMLElement)) return;
+  const popover = panel.querySelector(".semai-settings-popover");
+  if (!popover) return;
+  if (popover.hidden) {
+    semaiOpenPanelSettingsPopover(panel);
+  } else {
+    semaiClosePanelSettingsPopover(panel);
+  }
+}
+
+// Global dismiss handlers — close the popover on outside-click or Escape.
+// Attached once at module load. They no-op when no panel exists yet.
+document.addEventListener("click", (event) => {
+  const panel = document.getElementById("semai-panel");
+  if (!panel) return;
+  const popover = panel.querySelector(".semai-settings-popover");
+  if (!popover || popover.hidden) return;
+  const target = event.target;
+  if (!(target instanceof Node)) return;
+  if (panel.querySelector(".semai-settings")?.contains(target)) return;
+  semaiClosePanelSettingsPopover(panel);
+}, true);
+
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") return;
+  const panel = document.getElementById("semai-panel");
+  if (!panel) return;
+  const popover = panel.querySelector(".semai-settings-popover");
+  if (!popover || popover.hidden) return;
+  semaiClosePanelSettingsPopover(panel);
+});
 
 // ===== SIGNATURE STRIPPING (reading view) =====
 // All signature detection and body cleaning logic is in semaiSigDetector.js.
@@ -1925,6 +2194,58 @@ function semaiPersistChatUiSettings(settings) {
     window.localStorage.setItem(SEMAI_CHAT_UI_SETTINGS_STORAGE_KEY, JSON.stringify(settings));
   } catch (error) {
     console.warn("[semai] Failed to persist chat UI settings", error);
+  }
+}
+
+// =====================================================================
+// PANEL SETTINGS — toggles surfaced via the gear icon on the floating
+// Remou panel. Persisted in localStorage. Currently:
+//   - signatureHidingEnabled: when ON (default), the reading-pane
+//     observer hides email signatures with a "Show signature" toggle.
+//     When OFF, signatures are restored to the original HTML.
+// =====================================================================
+function semaiNormalizePanelSettings(settings) {
+  const src = settings && typeof settings === "object" ? settings : {};
+  const signatureHidingEnabled = src.signatureHidingEnabled === false ? false : true;
+  return { signatureHidingEnabled };
+}
+
+let semaiPanelSettings = (function () {
+  try {
+    const raw = window.localStorage.getItem(SEMAI_PANEL_SETTINGS_STORAGE_KEY);
+    return semaiNormalizePanelSettings(raw ? JSON.parse(raw) : null);
+  } catch (_) {
+    return semaiNormalizePanelSettings(null);
+  }
+})();
+
+function semaiGetPanelSettings() {
+  return semaiPanelSettings;
+}
+
+function semaiPersistPanelSettings(settings) {
+  try {
+    window.localStorage.setItem(SEMAI_PANEL_SETTINGS_STORAGE_KEY, JSON.stringify(settings));
+  } catch (error) {
+    console.warn("[semai] Failed to persist panel settings", error);
+  }
+}
+
+function semaiUpdatePanelSettings(partial) {
+  const next = semaiNormalizePanelSettings({ ...semaiPanelSettings, ...partial });
+  const prev = semaiPanelSettings;
+  semaiPanelSettings = next;
+  semaiPersistPanelSettings(next);
+
+  // Side-effect: signature hiding toggle takes effect immediately on
+  // every visible reading body so the user sees the change without
+  // having to navigate away.
+  if (prev.signatureHidingEnabled !== next.signatureHidingEnabled) {
+    if (next.signatureHidingEnabled) {
+      semaiReapplyAllSignatures();
+    } else {
+      semaiRestoreAllSignatures();
+    }
   }
 }
 
@@ -3068,20 +3389,75 @@ function semaiUpdateCalibrationStatus(message, tone = "neutral") {
   status.dataset.tone = tone;
 }
 
+function semaiDetachCalibrationListeners() {
+  document.body.classList.remove("semai-calibrating");
+  document.removeEventListener("mousemove", semaiHandleCalibrationHover, true);
+  document.removeEventListener("click", semaiHandleCalibrationClick, true);
+  document.removeEventListener("keydown", semaiHandleCalibrationKeydown, true);
+}
+
+function semaiResumeCalibrationInteraction() {
+  document.body.classList.add("semai-calibrating");
+  document.addEventListener("mousemove", semaiHandleCalibrationHover, true);
+  document.addEventListener("click", semaiHandleCalibrationClick, true);
+  document.addEventListener("keydown", semaiHandleCalibrationKeydown, true);
+}
+
+function semaiPauseCalibrationInteraction() {
+  semaiClearCalibrationHover();
+  semaiDetachCalibrationListeners();
+}
+
+function semaiCalibrationTargetSelector() {
+  return '.OZZZK, [data-testid="senderName"], [class*="senderName" i], [class*="sender-name" i], .ms-Persona-primaryText';
+}
+
+function semaiClearCalibrationCandidates() {
+  semaiCalibrationCandidateEls.forEach((el) => {
+    if (!(el instanceof Element)) return;
+    el.classList.remove("semai-calibration-candidate");
+    el.removeAttribute("data-semai-calibration-candidate-hint");
+  });
+  semaiCalibrationCandidateEls = [];
+}
+
+function semaiRefreshCalibrationCandidates() {
+  semaiClearCalibrationCandidates();
+  if (!semaiCalibrationState) return;
+
+  const seen = new Set();
+  document.querySelectorAll(semaiCalibrationTargetSelector()).forEach((candidate) => {
+    if (!(candidate instanceof Element)) return;
+    const text = (candidate.innerText || candidate.textContent || "").trim();
+    if (!text || text.length > 160) return;
+    if (!semaiLooksLikeSenderName(text)) return;
+    if (seen.has(candidate)) return;
+    seen.add(candidate);
+    candidate.classList.add("semai-calibration-candidate");
+    candidate.setAttribute("data-semai-calibration-candidate-hint", "sender");
+    semaiCalibrationCandidateEls.push(candidate);
+  });
+}
+
 function semaiClearCalibrationHover() {
   if (semaiCalibrationHoverEl) {
     semaiCalibrationHoverEl.classList.remove("semai-calibration-target");
+    semaiCalibrationHoverEl.removeAttribute("data-semai-calibration-hint");
     semaiCalibrationHoverEl = null;
   }
+}
+
+function semaiGetCalibrationHoverLabel() {
+  if (!semaiCalibrationState) return "Click this sender";
+  if (semaiCalibrationState.step === "other") return "Click this other sender";
+  return "Click your sender name";
 }
 
 function semaiStopCalibration(message = "Calibration cancelled.", tone = "neutral") {
   semaiCalibrationState = null;
   semaiClearCalibrationHover();
-  document.body.classList.remove("semai-calibrating");
-  document.removeEventListener("mousemove", semaiHandleCalibrationHover, true);
-  document.removeEventListener("click", semaiHandleCalibrationClick, true);
-  document.removeEventListener("keydown", semaiHandleCalibrationKeydown, true);
+  semaiClearCalibrationCandidates();
+  semaiDetachCalibrationListeners();
   semaiUpdateCalibrationStatus(message, tone);
 }
 
@@ -3089,7 +3465,7 @@ function semaiFindCalibrationTarget(startEl) {
   if (!(startEl instanceof Element)) return null;
 
   const candidate = startEl.closest(
-    '.OZZZK, [data-testid="senderName"], [class*="senderName" i], [class*="sender-name" i], .ms-Persona-primaryText'
+    semaiCalibrationTargetSelector()
   );
   if (!candidate) return null;
 
@@ -3110,6 +3486,7 @@ function semaiHandleCalibrationHover(event) {
   if (nextTarget) {
     semaiCalibrationHoverEl = nextTarget;
     semaiCalibrationHoverEl.classList.add("semai-calibration-target");
+    semaiCalibrationHoverEl.setAttribute("data-semai-calibration-hint", semaiGetCalibrationHoverLabel());
   }
 }
 
@@ -3128,10 +3505,14 @@ function semaiFinishCalibration(selfLabel, otherLabel, selector) {
   semaiGetCurrentUser();
   semaiUpdateChatToggleVisibility();
   semaiUpdateChatToggleBtn();
-  semaiDismissOnboardingModal();
-  const calibrateBtn = document.querySelector(".semai-calibrate-btn");
-  if (calibrateBtn) calibrateBtn.textContent = "Retrain sender detection";
+  // Update the popover calibrate button text
+  const calibrateBtns = document.querySelectorAll(".semai-calibrate-btn");
+  calibrateBtns.forEach(btn => { btn.textContent = "Retrain sender detection"; });
+  // Hide the main-panel calibrate button now that the user is calibrated
+  const mainCalibrateBtn = document.querySelector(".semai-calibrate-main-btn");
+  if (mainCalibrateBtn) mainCalibrateBtn.style.display = "none";
   semaiStopCalibration(`Saved. Using "${selfSender.name}" as you.`, "success");
+  semaiSetOnboardingStage("done");
 }
 
 function semaiHandleCalibrationKeydown(event) {
@@ -3141,6 +3522,7 @@ function semaiHandleCalibrationKeydown(event) {
   event.preventDefault();
   event.stopPropagation();
   semaiStopCalibration();
+  semaiRenderOnboardingModal();
 }
 
 function semaiHandleCalibrationClick(event) {
@@ -3157,11 +3539,13 @@ function semaiHandleCalibrationClick(event) {
   if (semaiCalibrationState.step === "self") {
     semaiCalibrationState.selfLabel = text;
     semaiCalibrationState.selector = semaiBuildSenderSelector(target);
-    semaiCalibrationState.step = "other";
+    semaiCalibrationState.step = "self-confirm";
+    semaiPauseCalibrationInteraction();
     semaiUpdateCalibrationStatus(
-      `Step 2: Click on another sender (who is not you).`,
-      "other"
+      `Nicely done. I have you registered as ${semaiNormalizeSenderLabel(text).name || text}.`,
+      "self"
     );
+    semaiSetOnboardingStage("self-confirm");
     return;
   }
 
@@ -3173,9 +3557,7 @@ function semaiHandleCalibrationClick(event) {
 }
 
 function semaiStartCalibration() {
-  semaiStopCalibration("Step 1: Click your sender name only. Do not click a To/recipient field. Step 2: Click another sender who is not you.", "neutral");
-  document.removeEventListener("click", semaiHandleCalibrationClick, true);
-  document.removeEventListener("mousemove", semaiHandleCalibrationHover, true);
+  semaiStopCalibration("Step 2: Click on your sender name only, not a To/recipient field.", "neutral");
   semaiClearCalibrationHover();
   semaiCalibrationState = {
     step: "self",
@@ -3183,11 +3565,10 @@ function semaiStartCalibration() {
     selector: null
   };
 
-  document.body.classList.add("semai-calibrating");
-  semaiUpdateCalibrationStatus("Step 1: Click on your sender name only, not a To/recipient field.", "self");
-  document.addEventListener("mousemove", semaiHandleCalibrationHover, true);
-  document.addEventListener("click", semaiHandleCalibrationClick, true);
-  document.addEventListener("keydown", semaiHandleCalibrationKeydown, true);
+  semaiUpdateCalibrationStatus("Step 2: Click on your sender name only, not a To/recipient field.", "self");
+  semaiRefreshCalibrationCandidates();
+  semaiResumeCalibrationInteraction();
+  semaiSetOnboardingStage("self");
 }
 
 // ===== ONBOARDING MODAL =====
@@ -3199,12 +3580,160 @@ function semaiHandleOnboardingKeydown(event) {
   semaiDismissOnboardingModal();
 }
 
-function semaiShowOnboardingModal() {
-  if (document.getElementById("semai-onboarding-modal")) return;
+function semaiHasThreadForCalibration() {
+  const bodies = document.querySelectorAll('[aria-label="Message body"]:not([contenteditable])');
+  return bodies.length >= 2;
+}
 
-  const modal = document.createElement("div");
-  modal.id = "semai-onboarding-modal";
-  modal.innerHTML = `
+function semaiSetOnboardingStage(stage) {
+  if (!semaiOnboardingState) {
+    semaiOnboardingState = { stage };
+  } else {
+    semaiOnboardingState.stage = stage;
+  }
+  semaiRenderOnboardingModal();
+}
+
+function semaiGetOnboardingCardContent() {
+  const stage = semaiOnboardingState?.stage || "intro";
+  const threadReady = semaiHasThreadForCalibration();
+  const selfName = semaiNormalizeSenderLabel(semaiCalibrationState?.selfLabel || "").name || "you";
+  const chatReady = semaiGetCalibration()?.senderSelector && semaiHasThreadForCalibration();
+
+  if (stage === "thread") {
+    return `
+      <h2 class="semai-onboarding-headline">One quick setup before you start</h2>
+      <p class="semai-onboarding-body">
+        Welcome to Remou, let’s customize this extension for you.
+      </p>
+      <div class="semai-onboarding-step-pill">Step 1</div>
+      <p class="semai-onboarding-body">
+        Open an email thread in which you have sent an email to someone.
+      </p>
+      <p class="semai-onboarding-note ${threadReady ? "is-ready" : ""}">
+        ${threadReady ? "Nice. I can see a thread ready for calibration." : "I’ll unlock the next step as soon as I detect an email thread with at least two messages."}
+      </p>
+      <button class="semai-onboarding-cta" type="button" data-semai-onboarding-action="continue-thread" ${threadReady ? "" : "disabled"}>
+        Continue →
+      </button>
+      <p class="semai-onboarding-note">You can redo this anytime from the Remou panel.</p>
+    `;
+  }
+
+  if (stage === "self") {
+    return `
+      <h2 class="semai-onboarding-headline">One quick setup before you start</h2>
+      <p class="semai-onboarding-body">
+        Welcome to Remou, let’s customize this extension for you.
+      </p>
+      <div class="semai-onboarding-step-pill">Step 2</div>
+      <p class="semai-onboarding-body">
+        We are going to calibrate Remou to recognize who you are.
+      </p>
+      <p class="semai-onboarding-body">
+        Click on your name in the thread. Make sure you click the sender name, not a To/recipient field.
+      </p>
+      <button class="semai-onboarding-secondary" type="button" data-semai-onboarding-action="restart-self">
+        Restart step 2
+      </button>
+      <p class="semai-onboarding-note">The highlighted sender name is the one Remou is watching for.</p>
+    `;
+  }
+
+  if (stage === "self-confirm") {
+    return `
+      <h2 class="semai-onboarding-headline">One quick setup before you start</h2>
+      <p class="semai-onboarding-body">
+        Welcome to Remou, let’s customize this extension for you.
+      </p>
+      <div class="semai-onboarding-step-pill">Step 2</div>
+      <p class="semai-onboarding-body">
+        Nicely done! I have you registered as <strong>${semaiEscapeHtml(selfName)}</strong>. If that’s not right, try again.
+      </p>
+      <div class="semai-onboarding-actions">
+        <button class="semai-onboarding-cta" type="button" data-semai-onboarding-action="confirm-self">
+          Yes, that’s me
+        </button>
+        <button class="semai-onboarding-secondary" type="button" data-semai-onboarding-action="restart-self">
+          Try again
+        </button>
+      </div>
+      <p class="semai-onboarding-note">Remou will use this to separate your messages from everyone else’s.</p>
+    `;
+  }
+
+  if (stage === "other") {
+    return `
+      <h2 class="semai-onboarding-headline">One quick setup before you start</h2>
+      <p class="semai-onboarding-body">
+        Welcome to Remou, let’s customize this extension for you.
+      </p>
+      <div class="semai-onboarding-step-pill">Step 3</div>
+      <p class="semai-onboarding-body">
+        Click on someone else’s name in the thread.
+      </p>
+      <p class="semai-onboarding-body">
+        Pick any sender who is not you. Remou will use this second click to separate your messages from the rest of the conversation.
+      </p>
+      <button class="semai-onboarding-secondary" type="button" data-semai-onboarding-action="resume-other">
+        Restart calibration
+      </button>
+      <p class="semai-onboarding-note">The highlighted sender name is the one Remou is waiting for.</p>
+    `;
+  }
+
+  if (stage === "done" || stage === "complete") {
+    const isComplete = semaiChatViewActive;
+    return `
+      <h2 class="semai-onboarding-headline">One quick setup before you start</h2>
+      <p class="semai-onboarding-body">
+        ${isComplete ? "Chat View is on. You’re all set." : "All Done! Now when you open an email thread, you will see this button appear to turn email conversations into a magical chat experience."}
+      </p>
+      <div class="semai-onboarding-chat-preview-wrap">
+        <button class="semai-onboarding-chat-preview" type="button" disabled>
+          ${semaiChatViewActive ? "Chat View is ON" : "Turn on chat view"}
+        </button>
+      </div>
+      ${isComplete ? `
+      <p class="semai-onboarding-note is-ready">Remou detected that Chat View is ON.</p>
+      <button class="semai-onboarding-cta" type="button" data-semai-onboarding-action="close">
+        Close
+      </button>
+      ` : `
+      <p class="semai-onboarding-note ${chatReady ? "is-ready" : ""}">
+        ${chatReady ? "Turn on chat view from the Remou panel to finish setup. I’ll update this screen as soon as it’s on." : "Open a thread to make the chat-view button available in the Remou panel."}
+      </p>
+      <button class="semai-onboarding-cta" type="button" data-semai-onboarding-action="activate-chat" ${chatReady ? "" : "disabled"}>
+        Turn on chat view
+      </button>
+      `}
+    `;
+  }
+
+  return `
+    <h2 class="semai-onboarding-headline">One quick setup before you start</h2>
+    <p class="semai-onboarding-body">
+      Welcome to Remou, let’s customize this extension for you.
+    </p>
+    <p class="semai-onboarding-body">
+      Remou needs to know who you are so it can tell your messages apart from others in chat view.
+    </p>
+    <button class="semai-onboarding-cta" type="button" data-semai-onboarding-action="start">
+      Start setup →
+    </button>
+    <p class="semai-onboarding-note">You can redo this anytime from the Remou panel.</p>
+  `;
+}
+
+function semaiRenderOnboardingModal() {
+  const modal = document.getElementById("semai-onboarding-modal");
+  if (!modal) return;
+
+  if (semaiChatViewActive && semaiOnboardingState?.stage === "done") {
+    semaiOnboardingState.stage = "complete";
+  }
+
+  const nextHtml = `
     <div class="semai-onboarding-card">
       <button
         class="semai-onboarding-close"
@@ -3219,43 +3748,100 @@ function semaiShowOnboardingModal() {
         <div class="semai-logo-dot" style="width:14px;height:14px;margin-right:8px;flex-shrink:0;"></div>
         <span style="font-size:14px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#0f172a;">Remou</span>
       </div>
-      <h2 class="semai-onboarding-headline">One quick setup before you start</h2>
-      <p class="semai-onboarding-body">
-        Remou needs to know who you are so it can tell your messages apart from others in chat view.
-      </p>
-      <ol class="semai-onboarding-steps">
-        <li>Click "Start setup" below — the panel will enter setup mode.</li>
-        <li>An email thread will appear highlighted — click on your name where it shows as the sender, not in any To/recipient line.</li>
-        <li>Then click on any other person's name in a different message.</li>
-      </ol>
-      <p class="semai-onboarding-body" style="margin-top:0;">
-        That's it. Remou will remember your identity for future sessions.
-      </p>
-      <button class="semai-onboarding-cta" type="button" id="semai-onboarding-cta-btn">Start setup →</button>
-      <p class="semai-onboarding-note">You can redo this anytime from the Remou panel.</p>
+      ${semaiGetOnboardingCardContent()}
     </div>
   `;
+
+  if (modal.dataset.semaiRenderedHtml === nextHtml) {
+    return;
+  }
+
+  modal.dataset.semaiRenderedHtml = nextHtml;
+  modal.innerHTML = nextHtml;
+
+  modal.querySelector("#semai-onboarding-close-btn").addEventListener("click", () => {
+    semaiDismissOnboardingModal();
+  });
+
+  modal.querySelectorAll("[data-semai-onboarding-action]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const action = button.getAttribute("data-semai-onboarding-action");
+      if (action === "close") {
+        semaiDismissOnboardingModal();
+        return;
+      }
+      if (action === "start") {
+        semaiSetOnboardingStage("thread");
+        return;
+      }
+      if (action === "continue-thread") {
+        semaiStartCalibration();
+        return;
+      }
+      if (action === "restart-self") {
+        semaiStartCalibration();
+        return;
+      }
+      if (action === "confirm-self") {
+        if (!semaiCalibrationState) {
+          semaiStartCalibration();
+          return;
+        }
+        semaiCalibrationState.step = "other";
+        semaiUpdateCalibrationStatus("Step 3: Click on someone else’s name.", "other");
+        semaiRefreshCalibrationCandidates();
+        semaiResumeCalibrationInteraction();
+        semaiSetOnboardingStage("other");
+        return;
+      }
+      if (action === "resume-other") {
+        if (!semaiCalibrationState) {
+          semaiStartCalibration();
+          return;
+        }
+        semaiCalibrationState.step = "other";
+        semaiUpdateCalibrationStatus("Step 3: Click on someone else’s name.", "other");
+        semaiRefreshCalibrationCandidates();
+        semaiResumeCalibrationInteraction();
+        semaiSetOnboardingStage("other");
+        return;
+      }
+      if (action === "activate-chat") {
+        semaiChatViewPinned = true;
+        semaiActivateChatView();
+      }
+    });
+  });
+}
+
+function semaiShowOnboardingModal() {
+  if (document.getElementById("semai-onboarding-modal")) {
+    semaiRenderOnboardingModal();
+    return;
+  }
+
+  const modal = document.createElement("div");
+  modal.id = "semai-onboarding-modal";
+  semaiOnboardingState = { stage: "intro" };
 
   modal.addEventListener("click", (event) => {
     if (event.target === modal) {
       semaiDismissOnboardingModal();
     }
   });
-  modal.querySelector("#semai-onboarding-close-btn").addEventListener("click", () => {
-    semaiDismissOnboardingModal();
-  });
-  modal.querySelector("#semai-onboarding-cta-btn").addEventListener("click", () => {
-    semaiDismissOnboardingModal();
-    semaiStartCalibration();
-  });
 
   document.body.appendChild(modal);
+  semaiRenderOnboardingModal();
   document.addEventListener("keydown", semaiHandleOnboardingKeydown, true);
 }
 
 function semaiDismissOnboardingModal() {
+  if (semaiCalibrationState) {
+    semaiStopCalibration("Calibration paused.", "neutral");
+  }
   const modal = document.getElementById("semai-onboarding-modal");
   if (modal) modal.remove();
+  semaiOnboardingState = null;
   document.removeEventListener("keydown", semaiHandleOnboardingKeydown, true);
 }
 
@@ -4101,6 +4687,11 @@ function semaiActivateChatView() {
 
     semaiChatViewActive = true;
     semaiUpdateChatToggleBtn();
+    if (semaiOnboardingState?.stage === "done") {
+      semaiSetOnboardingStage("complete");
+    } else {
+      semaiRenderOnboardingModal();
+    }
     semaiTrackEvent("chat_on", {
       page_url: window.location.href,
       message_count: messages.length
@@ -4184,6 +4775,7 @@ function semaiUpdateChatToggleVisibility() {
   const bodies = document.querySelectorAll('[aria-label="Message body"]:not([contenteditable])');
   btn.style.display = bodies.length >= 2 ? "" : "none";
   semaiUpdateChatToggleBtn();
+  semaiRenderOnboardingModal();
 }
 
 // Auto-deactivate when Outlook navigates to a different email
@@ -4230,17 +4822,61 @@ function semaiWatchForNavigation() {
 
 function semaiObserveReadingBodies() {
   const selector = '[aria-label="Message body"]:not([contenteditable])';
+  let pendingTimer = null;
 
-  const observer = new MutationObserver(() => {
-    document.querySelectorAll(selector).forEach(body => {
-      semaiStripSignature(body);
-    });
+  // Process every visible reading body once. semaiStripSignature is
+  // idempotent (skips bodies already marked dataset.semaiSigStripped),
+  // so the only real work happens on newly-added bodies.
+  const sweep = () => {
+    pendingTimer = null;
+    if (!semaiGetPanelSettings().signatureHidingEnabled) return;
+    document.querySelectorAll(selector).forEach(body => semaiStripSignature(body));
+  };
+
+  // Outlook's SPA mutates document.body constantly (presence, polling,
+  // hover effects, animations). Running querySelectorAll on every
+  // mutation is wasted work — debounce to a single sweep per ~180ms,
+  // and skip mutation batches that contain ZERO added nodes (attribute
+  // mutations and text-only mutations cannot introduce a new body).
+  const observer = new MutationObserver((mutations) => {
+    let hasAdditions = false;
+    for (let i = 0; i < mutations.length; i++) {
+      if (mutations[i].addedNodes.length > 0) { hasAdditions = true; break; }
+    }
+    if (!hasAdditions) return;
+    if (pendingTimer !== null) return;
+    pendingTimer = window.setTimeout(sweep, 180);
   });
 
   observer.observe(document.body, { childList: true, subtree: true });
 
-  // Handle already-rendered emails on load
-  document.querySelectorAll(selector).forEach(body => semaiStripSignature(body));
+  // Handle already-rendered emails on load (synchronous so chat-view
+  // activation triggered shortly after init sees stripped bodies).
+  sweep();
+}
+
+// Restore every body whose signature we hid, putting the original HTML
+// back. Invoked when the user toggles signature hiding OFF in the panel
+// settings popover. Idempotent.
+function semaiRestoreAllSignatures() {
+  const selector = '[aria-label="Message body"]:not([contenteditable])';
+  document.querySelectorAll(selector).forEach((body) => {
+    if (!(body instanceof HTMLElement)) return;
+    if (body.dataset.semaiSigStripped !== "true") return;
+    const original = body.dataset.semaiOriginalHtml;
+    if (typeof original === "string") {
+      body.innerHTML = original;
+    }
+    delete body.dataset.semaiSigStripped;
+    delete body.dataset.semaiOriginalHtml;
+  });
+}
+
+// Re-run the signature stripper on everything currently rendered.
+// Invoked when the user toggles signature hiding back ON.
+function semaiReapplyAllSignatures() {
+  const selector = '[aria-label="Message body"]:not([contenteditable])';
+  document.querySelectorAll(selector).forEach((body) => semaiStripSignature(body));
 }
 
 // ===== INIT =====

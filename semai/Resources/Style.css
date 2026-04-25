@@ -169,6 +169,17 @@ h2 {
     margin-top: 8px;
 }
 
+.inline-open-preferences {
+    display: inline-flex;
+    height: 32px;
+    margin: 0 6px;
+    padding: 0 14px;
+    vertical-align: middle;
+    font-size: 0.82em;
+    font-weight: 700;
+    letter-spacing: 0.03em;
+}
+
 .support-card {
     display: grid;
     gap: 12px;
@@ -177,6 +188,14 @@ h2 {
 
 .support-copy {
     color: var(--text-secondary);
+}
+
+.report-issue-spacer {
+    height: 28px;
+}
+
+.report-issue-heading {
+    margin-top: 0;
 }
 
 .report-issue-input {

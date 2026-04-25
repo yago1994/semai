@@ -1,7 +1,8 @@
 /* Container */
 #semai-panel {
   position: fixed;
-  bottom: 16px;
+  top: 16px;
+  bottom: auto;
   right: 16px;
   z-index: 999999;
   background: rgba(255, 255, 255, 0.94);
@@ -329,12 +330,26 @@ body.semai-calibrating * {
   cursor: crosshair !important;
 }
 
-.semai-calibration-target {
-  outline: 2px solid rgba(37, 99, 235, 0.9);
+.semai-calibration-candidate {
+  position: relative;
+  outline: 2px solid rgba(124, 58, 237, 0.55);
   outline-offset: 2px;
-  border-radius: 6px;
-  background: rgba(219, 234, 254, 0.45) !important;
-  box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.14);
+  border-radius: 8px;
+  background: rgba(124, 58, 237, 0.06) !important;
+  box-shadow: 0 0 0 4px rgba(124, 58, 237, 0.08);
+  cursor: pointer !important;
+  transition: outline-color 0.12s ease, background 0.12s ease, box-shadow 0.12s ease;
+}
+
+.semai-calibration-target {
+  position: relative;
+  outline: 3px solid rgba(124, 58, 237, 0.95);
+  outline-offset: 3px;
+  border-radius: 8px;
+  background: rgba(124, 58, 237, 0.12) !important;
+  box-shadow:
+    0 0 0 6px rgba(124, 58, 237, 0.14),
+    0 12px 28px rgba(124, 58, 237, 0.16);
 }
 
 /* ===== Chat view overlay ===== */
@@ -1031,7 +1046,7 @@ body.semai-calibrating * {
 }
 
 .semai-chat-reply-debug {
-  display: block;
+  display: none;
   margin: 6px 0 0;
   padding: 6px 8px;
   background: #1a1a1a;
@@ -1063,10 +1078,11 @@ body.semai-calibrating * {
   position: fixed;
   inset: 0;
   z-index: 999999;
-  background: rgba(0, 0, 0, 0.55);
   display: flex;
-  align-items: center;
-  justify-content: center;
+  align-items: flex-start;
+  justify-content: flex-start;
+  padding: 20px;
+  pointer-events: none;
   font-family: system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Text",
     "Segoe UI", sans-serif;
 }
@@ -1075,13 +1091,30 @@ body.semai-calibrating * {
   position: relative;
   background: #ffffff;
   border-radius: 16px;
-  padding: 32px;
-  max-width: 460px;
-  width: calc(100vw - 48px);
+  padding: 28px;
+  max-width: 420px;
+  width: min(420px, calc(100vw - 40px));
+  max-height: min(78vh, 720px);
+  overflow-y: auto;
   box-shadow: 0 24px 60px rgba(15, 23, 42, 0.28), 0 4px 16px rgba(15, 23, 42, 0.12);
   display: flex;
   flex-direction: column;
   gap: 12px;
+  pointer-events: auto;
+}
+
+.semai-onboarding-step-pill {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: rgba(124, 58, 237, 0.1);
+  color: #6d28d9;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
 .semai-onboarding-close {
@@ -1154,6 +1187,13 @@ body.semai-calibrating * {
   transition: filter 0.15s ease, transform 0.08s ease;
 }
 
+.semai-onboarding-cta:disabled {
+  opacity: 0.55;
+  cursor: default;
+  filter: none;
+  transform: none;
+}
+
 .semai-onboarding-cta:hover {
   filter: brightness(1.08);
 }
@@ -1168,4 +1208,251 @@ body.semai-calibrating * {
   font-size: 12px;
   color: #94a3b8;
   text-align: center;
+}
+
+.semai-onboarding-note.is-ready {
+  color: #0f766e;
+}
+
+.semai-onboarding-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.semai-onboarding-secondary {
+  width: 100%;
+  padding: 12px;
+  border: 1px solid rgba(148, 163, 184, 0.32);
+  border-radius: 10px;
+  background: #ffffff;
+  color: #334155;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.semai-onboarding-secondary:hover {
+  background: rgba(248, 250, 252, 0.96);
+  border-color: rgba(99, 102, 241, 0.32);
+}
+
+.semai-onboarding-chat-preview-wrap {
+  display: flex;
+  justify-content: center;
+}
+
+.semai-onboarding-chat-preview {
+  min-width: 210px;
+  padding: 10px 16px;
+  border: 1px solid rgba(99, 102, 241, 0.25);
+  border-radius: 999px;
+  background: rgba(99, 102, 241, 0.08);
+  color: #4338ca;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+/* ===== Remou panel settings popover (gear icon) ===== */
+.semai-settings {
+  position: relative;
+  display: inline-flex;
+}
+
+.semai-settings-popover {
+  position: absolute;
+  z-index: 10;
+  top: calc(100% + 6px);
+  right: 0;
+  width: 220px;
+  padding: 10px;
+  border-radius: 12px;
+  border: 1px solid rgba(15, 23, 42, 0.1);
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: 0 14px 32px rgba(15, 23, 42, 0.2);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  font-size: 11px;
+  color: #0f172a;
+}
+
+.semai-settings-popover[hidden] {
+  display: none;
+}
+
+.semai-settings-title {
+  margin-bottom: 8px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #475569;
+}
+
+.semai-settings-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 0;
+  cursor: pointer;
+  user-select: none;
+}
+
+.semai-settings-row + .semai-settings-row {
+  border-top: 1px solid rgba(148, 163, 184, 0.18);
+}
+
+.semai-settings-row-label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.semai-settings-row-hint {
+  font-size: 10px;
+  font-weight: 400;
+  color: #6b7280;
+  line-height: 1.35;
+}
+
+/* iOS-style toggle switch */
+.semai-settings-switch {
+  position: relative;
+  flex: 0 0 auto;
+  width: 30px;
+  height: 18px;
+  display: inline-block;
+}
+
+.semai-settings-switch input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+  z-index: 1;
+}
+
+.semai-settings-switch-track {
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.55);
+  transition: background 0.15s ease;
+}
+
+.semai-settings-switch-track::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.3);
+  transition: transform 0.15s ease;
+}
+
+.semai-settings-switch input:checked ~ .semai-settings-switch-track {
+  background: #6366f1;
+}
+
+.semai-settings-switch input:checked ~ .semai-settings-switch-track::after {
+  transform: translateX(12px);
+}
+
+.semai-settings-switch input:focus-visible ~ .semai-settings-switch-track {
+  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.35);
+}
+
+.semai-settings-about-btn {
+  margin-top: 8px;
+  width: 100%;
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(99, 102, 241, 0.3);
+  background: rgba(99, 102, 241, 0.06);
+  color: #4f46e5;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.semai-settings-about-btn:hover {
+  background: rgba(99, 102, 241, 0.14);
+  border-color: rgba(99, 102, 241, 0.5);
+}
+
+.semai-settings-about-btn:active {
+  transform: translateY(1px);
+}
+
+.semai-settings-divider {
+  border: none;
+  border-top: 1px solid rgba(0, 0, 0, 0.08);
+  margin: 8px 0;
+}
+
+.semai-settings-calibrate-btn {
+  margin-top: 2px;
+  width: 100%;
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  background: rgba(0, 0, 0, 0.04);
+  color: #374151;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.semai-settings-calibrate-btn:hover {
+  background: rgba(0, 0, 0, 0.09);
+}
+
+.semai-settings-calibrate-btn:active {
+  transform: translateY(1px);
+}
+
+/* Missing-token hint — shown above the reply input the first time a send
+   has to fall back to compose-UI because no bearer token was captured.
+   See gotcha #9 in README.md. */
+.semai-chat-token-hint {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0 12px 8px 12px;
+  padding: 8px 10px;
+  background: #fff8e1;
+  border: 1px solid #ffd54f;
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: #5d4037;
+}
+
+.semai-chat-token-hint button {
+  flex: 0 0 auto;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 0 4px;
+  font-size: 14px;
+  line-height: 1;
+  color: #5d4037;
+}
+
+.semai-chat-token-hint button:hover {
+  color: #000;
 }

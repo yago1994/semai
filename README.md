@@ -66,23 +66,75 @@ So instead: list the 50 most recent messages (always indexed, no lag), match one
 
 ---
 
-## Known limitations & plan of action
+## Resolved defenses
 
-The REST path works, but five known issues will hit real users eventually. None of them are addressed yet — this section is the punch list.
+### Safe-match gate (was gotcha #8 — wrong-thread reply risk)
 
-### #4 — Token expiration after long idle
+**Risk.** Two unrelated threads can share `BodyPreview` text ("thanks!", "Sent from my iPhone", boilerplate replies). Pivoting on body-preview alone could misroute a reply-all into the wrong thread with the wrong recipients. This is a privacy/correctness disaster the system MUST NOT allow.
 
-**Problem.** Outlook bearer tokens have ~60-minute lifetime. We cache the most-recently-captured token in `semaiCachedOutlookToken` and reuse it. If the user wakes their laptop after >1h without Outlook making any background traffic, the cached token is stale; the `replyAll` POST returns `401 Unauthorized`; we fall back to the compose-UI path and leave a draft.
+**Implementation** — `semaiResolveMessageIdViaRest` in `contentScript.js` now applies six independent gates before it will return a `messageId`:
 
-**Plan.**
-1. On `401` from `OUTLOOK_API_CALL`, don't fall back immediately. Instead, mark the cached token as invalid (`semaiCachedOutlookToken = null`) and trigger a token refresh by issuing a benign request to a known Outlook endpoint (e.g. fetch the user's own profile via the OWA frontdoor) — this provokes Outlook's SPA to mint a new token, which our hook captures.
-2. Retry the original POST once with the new token.
-3. Only fall back to compose UI if the retry also fails.
-4. Optional: stash the token's `exp` claim (decode the JWT payload — base64 of segment 1) and proactively treat the cache as empty when within 60s of expiry.
+| # | Gate | Threshold |
+|---|------|-----------|
+| 1 | Snippet length | `≥ SEMAI_MIN_SNIPPET_LEN` (30 chars after the 20-char greeting skip) |
+| 2 | Snippet must not be dominated by a generic phrase | "thanks", "ok", "got it", "sounds good", "regards", "sent from my iphone", etc. — match if any phrase covers >70% of the snippet |
+| 3 | Sender email cross-check | candidate's `From.EmailAddress.Address` (or `Sender.EmailAddress.Address` for delegated send) must equal the overlay message's parsed sender email when both are known |
+| 4 | Date proximity | candidate's `ReceivedDateTime` within `SEMAI_MAX_DATE_DELTA_MIN` (5 min) of the overlay's parsed timestamp; skipped only if overlay timestamp is unparseable |
+| 5 | Multi-message confirmation | `≥ SEMAI_MIN_CONFIRMING_MATCHES` (2) **distinct** overlay messages must survive gates 1-4 against the SAME `ConversationId` |
+| 6 | Single-match override | a lone match is accepted ONLY if its snippet is `≥ SEMAI_STRICT_SNIPPET_LEN` (40 chars), sender email is verified-equal, AND date is within `SEMAI_STRICT_DATE_DELTA_MIN` (2 min) |
 
-**Files.** `contentScript.js` (`semaiCallOutlookApi`, `semaiTryReplyAllViaRestApi`).
+If any of these fail, `semaiResolveMessageIdViaRest` throws and `semaiTryReplyAllViaRestApi` falls back to the compose-UI path. The fallback leaves a draft (UX wart) but **cannot** misroute the reply, which is the invariant we protect.
+
+The full evaluation trail (per-overlay snippet, sender email, body hits, sender rejects, date rejects, accepted candidates, dominant convId, distinct confirmations) is dumped into the chat-overlay debug panel under `SAFE:` lines so any field failure can be diagnosed without instrumenting builds.
+
+**Tunables** are constants at the top of the SAFE-MATCH GATE block in `contentScript.js`. `SEMAI_GENERIC_PHRASES` is also there for additions.
+
+**Open follow-up.** A unit-test fixture for the "two threads with identical 'thanks!' reply" case still needs to be added under `tests/` — the gate logic is testable in isolation against a JSON `recent` fixture and a synthetic overlay-messages array.
 
 ---
+
+### Token lifecycle (was gotcha #4 — token expiration after long idle)
+
+**Risk.** Outlook bearer tokens are JWTs with a ~60min lifetime. The page-world hook re-captures fresh tokens whenever Outlook polls its own backends, but on wake-from-sleep / long-idle, the cached token can be stale. A stale-token POST returns 401, the REST path aborts, and the user sees a phantom draft as the compose-UI fallback runs.
+
+**Implementation** — `contentScript.js` now layers two defenses inside `semaiCallOutlookApi`:
+
+| Layer | What it does | Where |
+|-------|--------------|-------|
+| Proactive expiry check | Decodes the JWT `exp` claim of the cached token; if it expires within `SEMAI_TOKEN_EXPIRY_BUFFER_MS` (60s), treats the cache as empty and refuses the call until a fresh token arrives | `semaiGetUsableToken` / `semaiDecodeJwtExp` |
+| Reactive 401 retry | On 401, wipes the cache, polls for up to `SEMAI_TOKEN_REFRESH_TIMEOUT_MS` (5s) waiting for the page-world hook to publish a *different* token, then retries the original request once | `semaiCallOutlookApi` / `semaiWaitForFreshToken` |
+
+The reactive path works because Outlook's SPA polls its own backends every few seconds (mail/presence/focused-inbox). Wiping our cache doesn't affect Outlook's behavior — within 1-3 seconds it issues another Bearer-tagged fetch and the hook publishes a fresh token via the `semai-outlook-token` CustomEvent. The retry uses that new token.
+
+If the retry also returns 401 (extension permanently revoked, or no fresh token within 5s), the function returns the 401 response and the caller falls back to compose-UI. The user still sends successfully; they just get the draft side effect.
+
+**Tunables.** `SEMAI_TOKEN_EXPIRY_BUFFER_MS`, `SEMAI_TOKEN_REFRESH_TIMEOUT_MS`, `SEMAI_TOKEN_REFRESH_POLL_MS` at the top of the TOKEN LIFECYCLE block in `contentScript.js`.
+
+**Open follow-up.** Persisting the captured token in `chrome.storage.session` would also smooth over service-worker restarts (currently we only cache in content-script module memory, which is per-page-load). Worth doing alongside #5 (audience scoping) so we don't accidentally persist a wrong-audience token.
+
+---
+
+### Install-race recovery (was gotcha #9 — SPA reload race on first install)
+
+**Risk.** When the extension is installed into a browser that already has Outlook tabs open, `pageWorldHook.js` only injects after the user's next chrome.runtime activation. By then Outlook's SPA bundles have already executed and minted their initial tokens. Until Outlook's next background poll, no token is cached and the first reply falls back to compose-UI silently — leaving a draft with no explanation.
+
+**Implementation** — two layers:
+
+1. **Auto-reload on first install** (`background.js`, `reloadOpenOutlookTabs`). The `chrome.runtime.onInstalled` listener now checks `details.reason === 'install'` and force-reloads any open Outlook tabs. We deliberately do NOT reload on `'update'` / `'browser_update'` / `'shared_module_update'` — auto-updates shouldn't kick a user out of an in-progress compose. Uses `chrome.tabs.query` filtered by the same host patterns the manifest declares (no `tabs` permission needed since `host_permissions` covers these origins).
+
+2. **One-shot inline hint banner** (`contentScript.js`, `semaiShowMissingTokenHint`). If a reply attempt finds `semaiCachedOutlookToken === ""` and falls back to compose-UI, we surface a yellow `.semai-chat-token-hint` banner above the reply input: *"Tip: reload this Outlook tab to send replies without leaving a draft."* The banner has a dismiss button and auto-clears after 30s. The `semaiMissingTokenHintShown` module flag ensures it shows at most once per page session — we don't nag.
+
+These cover different failure modes:
+- The auto-reload fixes the genuine first-install race (extension installed mid-Outlook-session).
+- The hint covers cases where auto-reload didn't run (manual install via Safari devmode, content-script restart without page reload, Safari-specific edge cases) — and tells the user exactly what to do.
+
+**Open follow-up.** A "provoke" path that fires a benign authenticated fetch from the page world to force Outlook to attach a Bearer header (without reloading) would eliminate the install-time disruption entirely. Needs an Outlook endpoint that's safe to hit without side effects and that we've verified attaches Authorization. Lower priority now that auto-reload covers the common path.
+
+---
+
+## Known limitations & plan of action
+
+Two known issues will hit real users eventually. Neither is addressed yet — this section is the punch list.
 
 ### #5 — Token audience mismatch
 
@@ -109,37 +161,6 @@ The REST path works, but five known issues will hit real users eventually. None 
 5. Test on a personal `@outlook.com` account before shipping.
 
 **Files.** `manifest.json`, `contentScript.js`, `pageWorldHook.js`.
-
----
-
-### #8 — False `BodyPreview` matches (MAJOR — wrong-thread reply risk)
-
-**Problem.** We resolve the target message ID by matching a 50-char `BodyPreview` snippet against the chat overlay. If two unrelated threads share similar body text (the canonical example: a one-word "thanks!" reply, or boilerplate "Sent from my iPhone" footers), we may pivot to the wrong `ConversationId` and reply-all into a completely unrelated thread. This is a privacy and correctness disaster — a reply meant for thread A could land in thread B with thread B's recipient list.
-
-**Current mitigations.** We skip the first 20 chars (avoids "Hi Yago," / "Thanks," / signature openers) and take a 50-char window from the middle. Helps with greetings, doesn't help with one-line replies.
-
-**Plan.**
-1. **Sender email cross-check.** Every chat-overlay message carries the sender's email address in the DOM. Before accepting a `BodyPreview` match, verify the candidate message's `From.EmailAddress.Address` equals the overlay message's sender. If not, skip and try the next candidate.
-2. **Date proximity check.** Each overlay message has a timestamp. Only accept matches within ±5 minutes of the overlay message's parsed date.
-3. **Multi-message confirmation.** Require at least 2 overlay messages to match within the same `ConversationId` before pivoting. A coincidental match on one message is plausible; a coincidental match on two is vanishingly unlikely.
-4. **Refuse to send if confidence is low.** If we can match only one overlay message with a generic snippet (e.g. snippet contains common phrases "thanks", "ok", "got it", or is shorter than 30 chars after the skip), abort the REST path and fall back to compose UI. Better to leave a draft than misroute a reply.
-5. Add a unit test fixture covering the "two threads with identical 'thanks!' reply" case.
-
-**Files.** `contentScript.js` (`semaiResolveMessageIdViaRest`, `semaiBodySnippet`).
-
----
-
-### #9 — SPA reload race on first install
-
-**Problem.** `pageWorldHook.js` only intercepts tokens for fetches that happen *after* it executes. On first install (or after extension update), the extension activates mid-session — Outlook's SPA bundles already loaded, the initial token-minting fetch already happened. Result: no token captured until the user manually reloads the Outlook tab. Until they do, every reply falls back to the compose-UI path with the draft side effect, and the user has no idea why.
-
-**Plan.**
-1. **Detect missing-token state.** When `semaiTryReplyAllViaRestApi` finds `semaiCachedOutlookToken === null`, surface a one-time toast in the chat overlay: "Reload the Outlook tab to enable seamless replies."
-2. **Auto-reload on first install.** In `background.js`, listen for `chrome.runtime.onInstalled` with `reason === 'install' || reason === 'update'`. Use `chrome.tabs.query({ url: ['https://outlook.office.com/*', …] })` and `chrome.tabs.reload(tabId)` for any matching open tab. Caveats: this loses unsaved compose state in Outlook's UI — gate it behind a confirm prompt or only do it on `install`, not `update`.
-3. **Provoke a token-minting request.** Alternative to reload: from `contentScript.js`, after install, fire a benign no-op fetch via the page world (e.g. `await fetch('/owa/service.svc?action=GetUserConfiguration', { credentials: 'include' })`). Outlook's SPA will attach a `Bearer` header → our hook captures it. Doesn't reload the tab. Need to verify Outlook actually attaches Authorization to that endpoint.
-4. **Persist last-known-good token.** Store the captured token (encrypted, with `exp`) in `chrome.storage.session` so a service-worker restart doesn't lose it. Doesn't solve first-install but does smooth over background-script wake-ups.
-
-**Files.** `background.js`, `contentScript.js`, `pageWorldHook.js`.
 
 ---
 

@@ -32,10 +32,53 @@ fetch(chrome.runtime.getURL('semaiSigDetector.js'))
   })
   .catch(err => console.warn('[semai] Failed to load semaiSigDetector.js:', err.message));
 
-chrome.runtime.onInstalled.addListener(() => {
+chrome.runtime.onInstalled.addListener((details) => {
   fetchAndCachePatches();
   chrome.alarms.create(ALARM_NAME, { periodInMinutes: FETCH_INTERVAL_MINUTES });
+
+  // Gotcha #9 — SPA reload race. When the extension is freshly installed
+  // into a browser that already has Outlook tabs open, the page-world
+  // hook in pageWorldHook.js loads AFTER Outlook's SPA bundles have
+  // already executed and minted their bearer tokens. Until Outlook makes
+  // its NEXT background poll (typically within 30s for mail/presence)
+  // we have no token cached, so the first reply attempt falls back to
+  // the compose-UI path and leaves a draft.
+  //
+  // Force-reload any open Outlook tabs ONLY on a true first install.
+  // We deliberately do NOT do this on `update` — extension auto-updates
+  // shouldn't kick a user out of an in-progress compose. Same for
+  // browser_update / shared_module_update.
+  if (details && details.reason === 'install') {
+    reloadOpenOutlookTabs();
+  }
 });
+
+function reloadOpenOutlookTabs() {
+  const outlookPatterns = [
+    'https://outlook.office.com/*',
+    'https://outlook.live.com/*',
+    'https://outlook.office365.com/*',
+    'https://outlook.cloud.microsoft/*'
+  ];
+  try {
+    chrome.tabs.query({ url: outlookPatterns }, (tabs) => {
+      if (chrome.runtime.lastError) {
+        console.warn('[semai] tabs.query failed on install:', chrome.runtime.lastError.message);
+        return;
+      }
+      const list = Array.isArray(tabs) ? tabs : [];
+      if (list.length === 0) return;
+      console.log(`[semai] Reloading ${list.length} Outlook tab(s) post-install for token capture.`);
+      for (const tab of list) {
+        if (typeof tab?.id === 'number') {
+          try { chrome.tabs.reload(tab.id); } catch (_) { /* swallow */ }
+        }
+      }
+    });
+  } catch (err) {
+    console.warn('[semai] reloadOpenOutlookTabs failed:', err && err.message ? err.message : err);
+  }
+}
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === ALARM_NAME) fetchAndCachePatches();
