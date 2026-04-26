@@ -2513,7 +2513,43 @@ function semaiBuildGitHubIssueTitle(reason, subject) {
     .slice(0, 240);
 }
 
-function semaiBuildFallbackGitHubIssueBody(message, subject, reason) {
+let semaiExtensionBuildInfoPromise = null;
+
+async function semaiGetExtensionBuildInfo() {
+  if (semaiExtensionBuildInfoPromise) {
+    return semaiExtensionBuildInfoPromise;
+  }
+
+  semaiExtensionBuildInfoPromise = (async () => {
+    const manifestVersion =
+      (typeof chrome !== "undefined" && chrome.runtime?.getManifest?.().version) ||
+      (typeof browser !== "undefined" && browser.runtime?.getManifest?.().version) ||
+      "unknown";
+    let version = manifestVersion;
+    let build = "unknown";
+
+    try {
+      const plistUrl =
+        (typeof chrome !== "undefined" && chrome.runtime?.getURL?.("Info.plist")) ||
+        (typeof browser !== "undefined" && browser.runtime?.getURL?.("Info.plist"));
+      if (plistUrl) {
+        const plistText = await fetch(plistUrl).then((response) => response.text());
+        const versionMatch = plistText.match(/<key>\s*CFBundleShortVersionString\s*<\/key>\s*<string>([^<]+)<\/string>/i);
+        const buildMatch = plistText.match(/<key>\s*CFBundleVersion\s*<\/key>\s*<string>([^<]+)<\/string>/i);
+        if (versionMatch?.[1]) version = versionMatch[1].trim();
+        if (buildMatch?.[1]) build = buildMatch[1].trim();
+      }
+    } catch (error) {
+      semaiNativeLog(`[semai-report] Failed to read extension build info: ${error.message}`);
+    }
+
+    return { version, build };
+  })();
+
+  return semaiExtensionBuildInfoPromise;
+}
+
+function semaiBuildFallbackGitHubIssueBody(message, subject, reason, buildInfo = {}) {
   const senderName = message.sender?.name || "Unknown";
   const senderEmail = message.sender?.email || "Unknown";
   const timestamp = message.timestamp || "Unknown";
@@ -2528,6 +2564,8 @@ function semaiBuildFallbackGitHubIssueBody(message, subject, reason) {
     `- Sender Email: ${senderEmail}`,
     `- Sender Initials: ${bubbleInitials}`,
     `- Chat Bubble: ${bubbleRole}`,
+    `- REMOU Version: ${buildInfo.version || "unknown"}`,
+    `- REMOU Build: ${buildInfo.build || "unknown"}`,
     `- Timestamp: ${timestamp}`,
     `- Page URL: ${window.location.href}`,
     "",
@@ -2598,7 +2636,7 @@ function semaiCaptureFixtureHtml() {
   return clone.outerHTML;
 }
 
-function semaiBuildGitHubIssueBody(message, subject, reason) {
+function semaiBuildGitHubIssueBody(message, subject, reason, buildInfo = {}) {
   const senderName = message.sender?.name || "Unknown";
   const senderEmail = message.sender?.email || "Unknown";
   const timestamp = message.timestamp || "Unknown";
@@ -2614,6 +2652,8 @@ function semaiBuildGitHubIssueBody(message, subject, reason) {
     `- Sender Email: ${senderEmail}`,
     `- Sender Initials: ${bubbleInitials}`,
     `- Chat Bubble: ${bubbleRole}`,
+    `- REMOU Version: ${buildInfo.version || "unknown"}`,
+    `- REMOU Build: ${buildInfo.build || "unknown"}`,
     `- Timestamp: ${timestamp}`,
     `- Page URL: ${window.location.href}`,
     "",
@@ -2665,7 +2705,8 @@ async function semaiCreateGitHubIssue(message, subject, reason) {
     "Authorization": `Bearer ${REMOU_GITHUB_TOKEN}`,
     "Content-Type": "application/json"
   };
-  const primaryBody = semaiBuildGitHubIssueBody(message, subject, reason);
+  const buildInfo = await semaiGetExtensionBuildInfo();
+  const primaryBody = semaiBuildGitHubIssueBody(message, subject, reason, buildInfo);
   semaiNativeLog(`[semai-report] Creating GitHub issue for repo="${REMOU_GITHUB_REPO}" title="${title}" primaryBodyLength=${primaryBody.length}`);
   let response = await fetch(issueUrl, {
     method: "POST",
@@ -2680,7 +2721,7 @@ async function semaiCreateGitHubIssue(message, subject, reason) {
     const errorData = await response.json().catch(() => ({}));
     semaiNativeLog(`[semai-report] Primary issue create failed status=${response.status} message="${errorData.message || "unknown"}" errors=${JSON.stringify(errorData.errors || [])}`);
     if (response.status === 422) {
-      const fallbackBody = semaiBuildFallbackGitHubIssueBody(message, subject, reason);
+      const fallbackBody = semaiBuildFallbackGitHubIssueBody(message, subject, reason, buildInfo);
       semaiNativeLog(`[semai-report] Retrying GitHub issue with fallback body length=${fallbackBody.length}`);
       response = await fetch(issueUrl, {
         method: "POST",
@@ -2949,8 +2990,8 @@ function semaiRemoveTestBanner() {
   }
 }
 
-function semaiBuildApprovedFixIssueBody(message, subject, reason, patch) {
-  const baseBody = semaiBuildGitHubIssueBody(message, subject, reason);
+function semaiBuildApprovedFixIssueBody(message, subject, reason, patch, buildInfo = {}) {
+  const baseBody = semaiBuildGitHubIssueBody(message, subject, reason, buildInfo);
   const approvedSection = [
     "",
     "## Approved Fix",
@@ -2988,6 +3029,7 @@ async function semaiCreateApprovedFixIssue(message, subject, reason, patch) {
   if (!REMOU_GITHUB_REPO) throw new Error("Missing GitHub repo in secrets.js.");
 
   const title = semaiBuildGitHubIssueTitle(reason, subject);
+  const buildInfo = await semaiGetExtensionBuildInfo();
   const response = await fetch(`https://api.github.com/repos/${REMOU_GITHUB_REPO}/issues`, {
     method: "POST",
     headers: {
@@ -2997,7 +3039,7 @@ async function semaiCreateApprovedFixIssue(message, subject, reason, patch) {
     },
     body: JSON.stringify({
       title,
-      body: semaiBuildApprovedFixIssueBody(message, subject, reason, patch),
+      body: semaiBuildApprovedFixIssueBody(message, subject, reason, patch, buildInfo),
       labels: ["auto-fix"]
     })
   });

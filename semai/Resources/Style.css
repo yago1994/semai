@@ -8,14 +8,14 @@
     color-scheme: light dark;
 
     --spacing: 20px;
-    --accent-start: #6366f1;
-    --accent-end: #a855f7;
-    --accent-glow: rgba(99, 102, 241, 0.22);
+    --accent-start: #0072C6;
+    --accent-end: #0096FF;
+    --accent-glow: rgba(0, 114, 198, 0.22);
     --text-primary: #0f172a;
     --text-secondary: #475569;
     --surface: rgba(255, 255, 255, 0.82);
     --surface-strong: rgba(255, 255, 255, 0.94);
-    --surface-muted: rgba(238, 242, 255, 0.72);
+    --surface-muted: rgba(232, 242, 252, 0.72);
     --border-soft: rgba(148, 163, 184, 0.26);
     --shadow-strong: 0 24px 60px rgba(15, 23, 42, 0.18);
 }
@@ -42,9 +42,9 @@ body {
     color: var(--text-primary);
     text-align: center;
     background:
-        radial-gradient(circle at top left, rgba(168, 85, 247, 0.24), transparent 34%),
-        radial-gradient(circle at top right, rgba(99, 102, 241, 0.18), transparent 32%),
-        linear-gradient(180deg, #f8faff 0%, #eef2ff 52%, #f8fafc 100%);
+        radial-gradient(circle at top left, rgba(0, 150, 255, 0.18), transparent 34%),
+        radial-gradient(circle at top right, rgba(0, 114, 198, 0.14), transparent 32%),
+        linear-gradient(180deg, #f5faff 0%, #e8f2fc 52%, #f5f9fc 100%);
 }
 
 .onboarding {
@@ -82,7 +82,7 @@ body {
     height: 152px;
     border-radius: 36px;
     background:
-        linear-gradient(135deg, rgba(99, 102, 241, 0.16), rgba(168, 85, 247, 0.18)),
+        linear-gradient(135deg, rgba(0, 114, 198, 0.14), rgba(0, 150, 255, 0.16)),
         var(--surface-strong);
     box-shadow:
         inset 0 1px 0 rgba(255, 255, 255, 0.75),
@@ -90,16 +90,16 @@ body {
 }
 
 .hero-icon {
-    filter: drop-shadow(0 12px 26px rgba(79, 70, 229, 0.18));
+    filter: drop-shadow(0 12px 26px rgba(0, 114, 198, 0.20));
 }
 
 .eyebrow {
     display: inline-flex;
     align-items: center;
     padding: 7px 12px;
-    border: 1px solid rgba(99, 102, 241, 0.16);
+    border: 1px solid rgba(0, 114, 198, 0.20);
     border-radius: 999px;
-    background: rgba(99, 102, 241, 0.08);
+    background: rgba(0, 114, 198, 0.08);
     color: var(--accent-start);
     font-size: 0.85em;
     font-weight: 600;
@@ -151,10 +151,10 @@ h2 {
 .instructions {
     position: relative;
     padding: 22px 22px 20px;
-    border: 1px solid rgba(99, 102, 241, 0.12);
+    border: 1px solid rgba(0, 114, 198, 0.14);
     border-radius: 20px;
     background:
-        linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(238, 242, 255, 0.8));
+        linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(232, 242, 252, 0.80));
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
     text-align: left;
     align-self: start;
@@ -175,7 +175,7 @@ h2 {
     width: min(100%, 360px);
     margin-top: 12px;
     border-radius: 14px;
-    border: 1px solid rgba(99, 102, 241, 0.16);
+    border: 1px solid rgba(0, 114, 198, 0.18);
     box-shadow: 0 12px 30px rgba(15, 23, 42, 0.12);
 }
 
@@ -214,7 +214,7 @@ h2 {
     height: 112px;
     box-sizing: border-box;
     padding: 14px 16px;
-    border: 1px solid rgba(99, 102, 241, 0.18);
+    border: 1px solid rgba(0, 114, 198, 0.20);
     border-radius: 16px;
     background: rgba(255, 255, 255, 0.78);
     color: var(--text-primary);
@@ -230,9 +230,9 @@ h2 {
 }
 
 .report-issue-input:focus {
-    outline: 2px solid rgba(99, 102, 241, 0.28);
+    outline: 2px solid rgba(0, 114, 198, 0.30);
     outline-offset: 2px;
-    border-color: rgba(99, 102, 241, 0.36);
+    border-color: rgba(0, 114, 198, 0.40);
 }
 
 .support-actions {
@@ -258,7 +258,7 @@ h2 {
     cursor: default;
     opacity: 0.65;
     transform: none;
-    box-shadow: 0 10px 20px rgba(79, 70, 229, 0.18);
+    box-shadow: 0 10px 20px rgba(0, 114, 198, 0.18);
 }
 
 .report-issue-btn {
@@ -286,7 +286,7 @@ button {
     padding: 13px 20px;
     height: 48px;
     background: linear-gradient(135deg, var(--accent-start), var(--accent-end));
-    box-shadow: 0 14px 30px rgba(79, 70, 229, 0.28);
+    box-shadow: 0 14px 30px rgba(0, 114, 198, 0.30);
     font-size: 1em;
     font-weight: 600;
     line-height: 1;
@@ -300,13 +300,13 @@ button {
 
 button:hover {
     filter: brightness(1.04);
-    box-shadow: 0 18px 36px rgba(79, 70, 229, 0.34);
+    box-shadow: 0 18px 36px rgba(0, 114, 198, 0.36);
     transform: translateY(-1px);
 }
 
 button:active {
     transform: translateY(0);
-    box-shadow: 0 10px 20px rgba(79, 70, 229, 0.24);
+    box-shadow: 0 10px 20px rgba(0, 114, 198, 0.24);
 }
 
 @media (max-width: 720px) {
@@ -349,8 +349,8 @@ button:active {
 
     body {
         background:
-            radial-gradient(circle at top left, rgba(168, 85, 247, 0.18), transparent 34%),
-            radial-gradient(circle at top right, rgba(99, 102, 241, 0.18), transparent 32%),
+            radial-gradient(circle at top left, rgba(0, 150, 255, 0.14), transparent 34%),
+            radial-gradient(circle at top right, rgba(0, 114, 198, 0.14), transparent 32%),
             linear-gradient(180deg, #020617 0%, #0f172a 48%, #111827 100%);
     }
 
@@ -360,18 +360,18 @@ button:active {
 
     .hero-icon-wrap {
         background:
-            linear-gradient(135deg, rgba(99, 102, 241, 0.2), rgba(168, 85, 247, 0.24)),
+            linear-gradient(135deg, rgba(0, 114, 198, 0.22), rgba(0, 150, 255, 0.20)),
             var(--surface-strong);
     }
 
     .eyebrow {
-        border-color: rgba(129, 140, 248, 0.22);
-        background: rgba(99, 102, 241, 0.14);
-        color: #c7d2fe;
+        border-color: rgba(0, 150, 255, 0.24);
+        background: rgba(0, 114, 198, 0.16);
+        color: #90c8f6;
     }
 
     .instructions {
-        border-color: rgba(129, 140, 248, 0.14);
+        border-color: rgba(0, 150, 255, 0.16);
         background:
             linear-gradient(180deg, rgba(15, 23, 42, 0.88), rgba(30, 41, 59, 0.84));
         box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
@@ -379,7 +379,7 @@ button:active {
 
     .report-issue-input {
         background: rgba(15, 23, 42, 0.66);
-        border-color: rgba(129, 140, 248, 0.18);
+        border-color: rgba(0, 150, 255, 0.20);
     }
 
     .report-issue-status.is-success {
