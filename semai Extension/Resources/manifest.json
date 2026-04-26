@@ -53,7 +53,7 @@
   ],
   "web_accessible_resources": [
     {
-      "resources": ["pageWorldHook.js"],
+      "resources": ["pageWorldHook.js", "images/sender-example.png", "images/remou-image.png"],
       "matches": [
         "https://outlook.office.com/*",
         "https://outlook.live.com/*",

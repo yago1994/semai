@@ -52,6 +52,7 @@ body {
     display: grid;
     gap: 22px;
     width: min(900px, 100%);
+    font-size: calc(1rem + 4px);
     max-height: calc(100vh - 80px);
     margin: 0 auto;
     overflow-anchor: none;
@@ -167,6 +168,15 @@ h2 {
 
 .instructions li + li {
     margin-top: 8px;
+}
+
+.instruction-image {
+    display: block;
+    width: min(100%, 360px);
+    margin-top: 12px;
+    border-radius: 14px;
+    border: 1px solid rgba(99, 102, 241, 0.16);
+    box-shadow: 0 12px 30px rgba(15, 23, 42, 0.12);
 }
 
 .inline-open-preferences {

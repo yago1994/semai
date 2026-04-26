@@ -1911,7 +1911,11 @@ function createPanel() {
   panel.innerHTML = `
     <div class="semai-header">
       <div class="semai-header-left">
-        <div class="semai-logo-dot"></div>
+        <button class="semai-chat-toggle-btn" type="button" role="switch" aria-checked="false" style="display:none">
+          <span class="semai-chat-toggle-switch" aria-hidden="true">
+            <span class="semai-chat-toggle-thumb"></span>
+          </span>
+        </button>
         <div class="semai-title">REMOU</div>
       </div>
       <div class="semai-header-actions">
@@ -1950,22 +1954,14 @@ function createPanel() {
             </button>
             <hr class="semai-settings-divider" />
             <button class="semai-calibrate-btn semai-settings-calibrate-btn" type="button">
-              ${calibration ? "Retrain sender detection" : "Set up Remou"}
+              ${calibration ? "Recalibrate" : "Set up Remou"}
             </button>
             <p id="semai-calibration-status" class="semai-calibration-status"></p>
           </div>
         </div>
-        <button
-          class="semai-toggle-btn"
-          type="button"
-          aria-label="Collapse REMOU"
-        >
-          ▴
-        </button>
       </div>
     </div>
     <div class="semai-body">
-      <button class="semai-chat-toggle-btn" type="button" style="display:none">Turn on chat view</button>
       ${!calibration ? `<button class="semai-calibrate-btn semai-calibrate-main-btn" type="button">Set up Remou</button>` : ""}
       ${SEMAI_AI_AGENT_ENABLED ? `
       <p class="semai-subtitle">
@@ -1998,6 +1994,7 @@ function createPanel() {
   panel.addEventListener("click", (e) => {
     const target = e.target;
     if (!(target instanceof Element)) return;
+    const chatToggleBtn = target.closest(".semai-chat-toggle-btn");
 
     if (target.closest(".semai-settings-btn")) {
       semaiTogglePanelSettingsPopover(panel);
@@ -2013,16 +2010,10 @@ function createPanel() {
       return;
     }
 
-    if (!(target instanceof HTMLButtonElement)) return;
-
-    // Handle collapse/expand toggle
-    if (target.classList.contains("semai-toggle-btn")) {
-      toggleSemaiPanel();
-      return;
-    }
+    if (!(target instanceof HTMLButtonElement) && !(chatToggleBtn instanceof HTMLButtonElement)) return;
 
     // Handle chat view toggle
-    if (target.classList.contains("semai-chat-toggle-btn")) {
+    if (chatToggleBtn instanceof HTMLButtonElement) {
       if (semaiChatViewActive) {
         semaiDeactivateChatView();
       } else {
@@ -2078,9 +2069,9 @@ function createPanel() {
     semaiEnsurePanelVisible(panel, false);
   });
   semaiUpdateCalibrationStatus(
-    calibration
-      ? "✓ Setup complete. You can retrain anytime."
-      : "👆 Start here — tell Remou who you are.",
+    calibration?.selfName
+      ? `Remou knows you as ${calibration.selfName}.`
+      : "Tap Set up Remou to calibrate sender detection.",
     calibration ? "success" : "neutral"
   );
 
@@ -3390,14 +3381,14 @@ function semaiUpdateCalibrationStatus(message, tone = "neutral") {
 }
 
 function semaiDetachCalibrationListeners() {
-  document.body.classList.remove("semai-calibrating");
+  document.body.classList.remove("semai-calibration-live");
   document.removeEventListener("mousemove", semaiHandleCalibrationHover, true);
   document.removeEventListener("click", semaiHandleCalibrationClick, true);
   document.removeEventListener("keydown", semaiHandleCalibrationKeydown, true);
 }
 
 function semaiResumeCalibrationInteraction() {
-  document.body.classList.add("semai-calibrating");
+  document.body.classList.add("semai-calibration-live");
   document.addEventListener("mousemove", semaiHandleCalibrationHover, true);
   document.addEventListener("click", semaiHandleCalibrationClick, true);
   document.addEventListener("keydown", semaiHandleCalibrationKeydown, true);
@@ -3507,11 +3498,11 @@ function semaiFinishCalibration(selfLabel, otherLabel, selector) {
   semaiUpdateChatToggleBtn();
   // Update the popover calibrate button text
   const calibrateBtns = document.querySelectorAll(".semai-calibrate-btn");
-  calibrateBtns.forEach(btn => { btn.textContent = "Retrain sender detection"; });
+  calibrateBtns.forEach(btn => { btn.textContent = "Recalibrate"; });
   // Hide the main-panel calibrate button now that the user is calibrated
   const mainCalibrateBtn = document.querySelector(".semai-calibrate-main-btn");
   if (mainCalibrateBtn) mainCalibrateBtn.style.display = "none";
-  semaiStopCalibration(`Saved. Using "${selfSender.name}" as you.`, "success");
+  semaiStopCalibration(`Remou knows you as ${selfSender.name}.`, "success");
   semaiSetOnboardingStage("done");
 }
 
@@ -3599,16 +3590,14 @@ function semaiGetOnboardingCardContent() {
   const threadReady = semaiHasThreadForCalibration();
   const selfName = semaiNormalizeSenderLabel(semaiCalibrationState?.selfLabel || "").name || "you";
   const chatReady = semaiGetCalibration()?.senderSelector && semaiHasThreadForCalibration();
+  const senderExampleImageUrl = chrome.runtime.getURL("images/sender-example.png");
+  const remouExampleImageUrl = chrome.runtime.getURL("images/remou-image.png");
 
   if (stage === "thread") {
     return `
-      <h2 class="semai-onboarding-headline">One quick setup before you start</h2>
-      <p class="semai-onboarding-body">
-        Welcome to Remou, let’s customize this extension for you.
-      </p>
       <div class="semai-onboarding-step-pill">Step 1</div>
       <p class="semai-onboarding-body">
-        Open an email thread in which you have sent an email to someone.
+        Open an email thread in which you have had a conversation with someone.
       </p>
       <p class="semai-onboarding-note ${threadReady ? "is-ready" : ""}">
         ${threadReady ? "Nice. I can see a thread ready for calibration." : "I’ll unlock the next step as soon as I detect an email thread with at least two messages."}
@@ -3622,17 +3611,15 @@ function semaiGetOnboardingCardContent() {
 
   if (stage === "self") {
     return `
-      <h2 class="semai-onboarding-headline">One quick setup before you start</h2>
-      <p class="semai-onboarding-body">
-        Welcome to Remou, let’s customize this extension for you.
-      </p>
       <div class="semai-onboarding-step-pill">Step 2</div>
-      <p class="semai-onboarding-body">
-        We are going to calibrate Remou to recognize who you are.
-      </p>
       <p class="semai-onboarding-body">
         Click on your name in the thread. Make sure you click the sender name, not a To/recipient field.
       </p>
+      <img
+        class="semai-onboarding-inline-image"
+        src="${senderExampleImageUrl}"
+        alt="Example of the sender name to click during calibration"
+      >
       <button class="semai-onboarding-secondary" type="button" data-semai-onboarding-action="restart-self">
         Restart step 2
       </button>
@@ -3642,10 +3629,6 @@ function semaiGetOnboardingCardContent() {
 
   if (stage === "self-confirm") {
     return `
-      <h2 class="semai-onboarding-headline">One quick setup before you start</h2>
-      <p class="semai-onboarding-body">
-        Welcome to Remou, let’s customize this extension for you.
-      </p>
       <div class="semai-onboarding-step-pill">Step 2</div>
       <p class="semai-onboarding-body">
         Nicely done! I have you registered as <strong>${semaiEscapeHtml(selfName)}</strong>. If that’s not right, try again.
@@ -3664,10 +3647,6 @@ function semaiGetOnboardingCardContent() {
 
   if (stage === "other") {
     return `
-      <h2 class="semai-onboarding-headline">One quick setup before you start</h2>
-      <p class="semai-onboarding-body">
-        Welcome to Remou, let’s customize this extension for you.
-      </p>
       <div class="semai-onboarding-step-pill">Step 3</div>
       <p class="semai-onboarding-body">
         Click on someone else’s name in the thread.
@@ -3676,7 +3655,7 @@ function semaiGetOnboardingCardContent() {
         Pick any sender who is not you. Remou will use this second click to separate your messages from the rest of the conversation.
       </p>
       <button class="semai-onboarding-secondary" type="button" data-semai-onboarding-action="resume-other">
-        Restart calibration
+        Restart step 3
       </button>
       <p class="semai-onboarding-note">The highlighted sender name is the one Remou is waiting for.</p>
     `;
@@ -3685,17 +3664,20 @@ function semaiGetOnboardingCardContent() {
   if (stage === "done" || stage === "complete") {
     const isComplete = semaiChatViewActive;
     return `
-      <h2 class="semai-onboarding-headline">One quick setup before you start</h2>
+      <div class="semai-onboarding-step-pill">${isComplete ? "Complete" : "All Done"}</div>
       <p class="semai-onboarding-body">
-        ${isComplete ? "Chat View is on. You’re all set." : "All Done! Now when you open an email thread, you will see this button appear to turn email conversations into a magical chat experience."}
+        ${isComplete ? "You are done! 🎉" : "All Done! Now when you open an email thread, you will see this button appear to turn email conversations into a magical chat experience."}
       </p>
+      ${isComplete ? "" : `
       <div class="semai-onboarding-chat-preview-wrap">
-        <button class="semai-onboarding-chat-preview" type="button" disabled>
-          ${semaiChatViewActive ? "Chat View is ON" : "Turn on chat view"}
-        </button>
+        <img
+          class="semai-onboarding-chat-preview-image"
+          src="${remouExampleImageUrl}"
+          alt="Example of the Remou chat view control"
+        >
       </div>
+      `}
       ${isComplete ? `
-      <p class="semai-onboarding-note is-ready">Remou detected that Chat View is ON.</p>
       <button class="semai-onboarding-cta" type="button" data-semai-onboarding-action="close">
         Close
       </button>
@@ -4761,11 +4743,12 @@ function semaiUpdateChatToggleBtn() {
   const btn = document.querySelector(".semai-chat-toggle-btn");
   if (!btn) return;
   const isCalibrated = Boolean(semaiGetCalibration()?.senderSelector);
-  btn.textContent = semaiChatViewActive ? "Hide chat view" : "Turn on chat view";
   btn.disabled = !semaiChatViewActive && !isCalibrated;
+  btn.setAttribute("aria-checked", semaiChatViewActive ? "true" : "false");
+  btn.dataset.active = semaiChatViewActive ? "true" : "false";
   btn.title = !semaiChatViewActive && !isCalibrated
     ? "Train sender detection before turning on chat view."
-    : "";
+    : (semaiChatViewActive ? "Chat View On" : "Chat View Off");
 }
 
 // Show/hide the chat toggle based on whether we're looking at a thread

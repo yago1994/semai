@@ -11,23 +11,12 @@
   border-radius: 14px;
   border: 1px solid rgba(15, 23, 42, 0.08);
   box-shadow: 0 12px 32px rgba(15, 23, 42, 0.18);
-  padding: 10px 12px 12px;
+  padding: 6px 12px 4px;
   font-family: system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Text",
     "Segoe UI", sans-serif;
   font-size: 12px;
   max-width: 260px;
   transition: padding 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
-}
-
-/* Collapsed state */
-#semai-panel.semai-collapsed {
-  padding: 8px 10px;
-  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.16);
-  cursor: default;
-}
-
-#semai-panel.semai-collapsed .semai-body {
-  display: none;
 }
 
 /* Header */
@@ -74,13 +63,14 @@
 }
 
 /* Header action buttons */
-.semai-settings-btn,
-.semai-toggle-btn {
+.semai-settings-btn {
   border: none;
   background: transparent;
   cursor: pointer;
-  font-size: 11px;
-  padding: 2px 4px;
+  font-size: 24px;
+  width: 36px;
+  height: 36px;
+  padding: 0;
   border-radius: 999px;
   color: #6b7280;
   display: inline-flex;
@@ -89,12 +79,7 @@
   transition: background 0.15s ease, color 0.15s ease;
 }
 
-.semai-settings-btn {
-  font-size: 12px;
-}
-
-.semai-settings-btn:hover,
-.semai-toggle-btn:hover {
+.semai-settings-btn:hover {
   background: rgba(148, 163, 184, 0.16);
   color: #374151;
 }
@@ -255,31 +240,66 @@
 
 /* ===== Chat view toggle button (inside semai panel) ===== */
 .semai-chat-toggle-btn {
-  width: 100%;
-  padding: 6px 10px;
-  margin-bottom: 6px;
-  border-radius: 9px;
-  border: 1px solid rgba(99, 102, 241, 0.3);
-  background: rgba(99, 102, 241, 0.06);
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0;
+  padding: 0;
+  margin-bottom: 0;
+  border-radius: 999px;
+  border: none;
+  background: transparent;
   cursor: pointer;
-  font-size: 11px;
-  font-weight: 500;
-  color: #6366f1;
-  text-align: center;
-  transition: background 0.15s ease, border-color 0.15s ease;
+  transition: transform 0.12s ease, filter 0.15s ease;
 }
 
 .semai-chat-toggle-btn:hover {
-  background: rgba(99, 102, 241, 0.14);
-  border-color: rgba(99, 102, 241, 0.5);
+  filter: brightness(1.04);
+}
+
+.semai-chat-toggle-btn[data-active="true"] {
+  transform: scale(1.02);
+}
+
+.semai-chat-toggle-switch {
+  position: relative;
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  border: 2px solid rgba(99, 102, 241, 0.55);
+  background: rgba(255, 255, 255, 0.98);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
+  pointer-events: none;
+}
+
+.semai-chat-toggle-thumb {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: transparent;
+  transform: scale(0.5);
+  transition: transform 0.15s ease, background 0.15s ease;
+}
+
+.semai-chat-toggle-btn[data-active="true"] .semai-chat-toggle-switch {
+  border-color: #7c3aed;
+  box-shadow: 0 0 0 4px rgba(124, 58, 237, 0.12);
+}
+
+.semai-chat-toggle-btn[data-active="true"] .semai-chat-toggle-thumb {
+  background: linear-gradient(135deg, #6366f1, #a855f7);
+  transform: scale(1);
 }
 
 .semai-chat-toggle-btn:disabled {
   opacity: 0.55;
   cursor: default;
-  background: rgba(99, 102, 241, 0.03);
-  border-color: rgba(99, 102, 241, 0.18);
-  color: rgba(99, 102, 241, 0.55);
+  box-shadow: none;
 }
 
 .semai-calibrate-btn {
@@ -325,31 +345,44 @@
   border-color: rgba(34, 197, 94, 0.24);
 }
 
-body.semai-calibrating,
-body.semai-calibrating * {
-  cursor: crosshair !important;
+body.semai-calibration-live,
+body.semai-calibration-live * {
+  cursor: pointer !important;
 }
 
 .semai-calibration-candidate {
   position: relative;
-  outline: 2px solid rgba(124, 58, 237, 0.55);
-  outline-offset: 2px;
+  outline: 3px solid rgba(124, 58, 237, 0.82);
+  outline-offset: 3px;
   border-radius: 8px;
-  background: rgba(124, 58, 237, 0.06) !important;
-  box-shadow: 0 0 0 4px rgba(124, 58, 237, 0.08);
+  background: rgba(124, 58, 237, 0.16) !important;
+  box-shadow: 0 0 0 6px rgba(124, 58, 237, 0.18);
   cursor: pointer !important;
-  transition: outline-color 0.12s ease, background 0.12s ease, box-shadow 0.12s ease;
+  transition: outline-color 0.12s ease, background 0.12s ease, box-shadow 0.12s ease, opacity 0.6s ease;
+  animation: semaiCalibrationPulse 0.9s ease-in-out infinite;
 }
 
 .semai-calibration-target {
   position: relative;
-  outline: 3px solid rgba(124, 58, 237, 0.95);
-  outline-offset: 3px;
+  outline: 4px solid rgba(124, 58, 237, 1);
+  outline-offset: 4px;
   border-radius: 8px;
-  background: rgba(124, 58, 237, 0.12) !important;
+  background: rgba(124, 58, 237, 0.22) !important;
   box-shadow:
-    0 0 0 6px rgba(124, 58, 237, 0.14),
-    0 12px 28px rgba(124, 58, 237, 0.16);
+    0 0 0 8px rgba(124, 58, 237, 0.24),
+    0 14px 34px rgba(124, 58, 237, 0.22);
+}
+
+@keyframes semaiCalibrationPulse {
+  0%,
+  100% {
+    opacity: 1;
+    box-shadow: 0 0 0 6px rgba(124, 58, 237, 0.18);
+  }
+  50% {
+    opacity: 0.78;
+    box-shadow: 0 0 0 10px rgba(124, 58, 237, 0.3);
+  }
 }
 
 /* ===== Chat view overlay ===== */
@@ -1080,7 +1113,7 @@ body.semai-calibrating * {
   z-index: 999999;
   display: flex;
   align-items: flex-start;
-  justify-content: flex-start;
+  justify-content: flex-end;
   padding: 20px;
   pointer-events: none;
   font-family: system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Text",
@@ -1238,20 +1271,30 @@ body.semai-calibrating * {
   border-color: rgba(99, 102, 241, 0.32);
 }
 
+.semai-onboarding-inline-image {
+  display: block;
+  width: min(100%, 280px);
+  height: auto;
+  margin: 4px auto 2px;
+  border-radius: 12px;
+  border: 1px solid rgba(99, 102, 241, 0.14);
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.12);
+  object-fit: contain;
+}
+
 .semai-onboarding-chat-preview-wrap {
   display: flex;
   justify-content: center;
 }
 
-.semai-onboarding-chat-preview {
-  min-width: 210px;
-  padding: 10px 16px;
-  border: 1px solid rgba(99, 102, 241, 0.25);
-  border-radius: 999px;
-  background: rgba(99, 102, 241, 0.08);
-  color: #4338ca;
-  font-size: 13px;
-  font-weight: 700;
+.semai-onboarding-chat-preview-image {
+  display: block;
+  width: min(100%, 210px);
+  height: auto;
+  object-fit: contain;
+  border-radius: 12px;
+  border: 1px solid rgba(99, 102, 241, 0.14);
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.12);
 }
 
 /* ===== Remou panel settings popover (gear icon) ===== */
