@@ -647,6 +647,55 @@ body.semai-calibration-live * {
   color: #2563eb;
 }
 
+/* Status line under an optimistic me-bubble — "Sending…" → "Sent ✓".
+   Sits inside the bubble so it animates with it on insert. */
+.semai-chat-bubble-status {
+  margin-top: 4px;
+  font-size: 11px;
+  line-height: 1.3;
+  text-align: right;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  color: rgba(22, 50, 79, 0.55);
+  transition: color 0.18s ease;
+}
+
+.semai-chat-bubble-status[data-state="sending"]::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 5px;
+  border-radius: 50%;
+  background: rgba(22, 50, 79, 0.45);
+  animation: semai-chat-status-pulse 1.1s ease-in-out infinite;
+  vertical-align: middle;
+}
+
+.semai-chat-bubble-status[data-state="sent"] {
+  color: #2563eb;
+}
+
+.semai-chat-bubble-status[data-state="failed"] {
+  color: #dc2626;
+}
+
+@keyframes semai-chat-status-pulse {
+  0%, 100% { opacity: 0.35; transform: scale(0.85); }
+  50% { opacity: 1; transform: scale(1); }
+}
+
+/* Subtle pop-in for an optimistic row so insertion reads as motion, not
+   as a sudden jump. */
+.semai-chat-row-optimistic {
+  animation: semai-chat-row-pop 0.22s ease-out both;
+}
+
+@keyframes semai-chat-row-pop {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
 /* Message body inside bubble */
 .semai-chat-body {
   font-size: var(--semai-chat-font-size, 14px) !important;
@@ -906,12 +955,20 @@ body.semai-calibration-live * {
 }
 
 .semai-chat-composer {
-  padding: 12px 16px 14px;
-  background: rgba(255, 255, 255, 0.94);
+  /* Sits flush at the bottom of the overlay — solid bar rather than a
+     floating translucent panel. Modest bottom padding for button
+     breathing room; safe-area inset added on top for iPad/iPhone.
+     position+z-index establishes an explicit stacking context (we used
+     to get this for free from backdrop-filter); without it, the chat
+     scroll above can paint over the composer and swallow clicks. */
+  position: relative;
+  z-index: 2;
+  padding: 12px 16px 12px;
+  padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+  background: #ffffff;
   border-top: 1px solid rgba(15, 23, 42, 0.08);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
   flex-shrink: 0;
+  pointer-events: auto;
 }
 
 .semai-chat-reply-input {

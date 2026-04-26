@@ -1451,6 +1451,98 @@ async function semaiTryReplyAllViaRestApi(draft) {
   }
 }
 
+// Build an "optimistic" me-bubble in the chat thread for a draft that's
+// being sent. Shows immediately as "Sending…", flips to "Sent ✓" on success
+// or is removed on failure. We don't wait for Outlook's index to catch up
+// because users typically move on after sending — the local bubble stays
+// as their visual receipt. Returns a small controller {setSent, setFailed,
+// remove}, or null if the chat overlay isn't mounted (shouldn't happen
+// from this call site, but guarded anyway).
+function semaiAppendOptimisticChatBubble(draftText) {
+  const overlay = document.getElementById("semai-chat-overlay");
+  if (!overlay) return null;
+  const chatScroll = overlay.querySelector(".semai-chat-scroll");
+  if (!chatScroll) return null;
+
+  const user = semaiGetCurrentUser();
+  const senderName = user?.name || "You";
+  const senderInitials = user?.initials || "·";
+
+  const row = document.createElement("div");
+  row.className = "semai-chat-row semai-chat-me semai-chat-row-optimistic";
+  row.dataset.semaiOptimistic = "1";
+
+  const avatar = document.createElement("div");
+  avatar.className = "semai-chat-avatar";
+  avatar.textContent = senderInitials;
+  avatar.style.background = semaiNameColor(senderName);
+  avatar.title = senderName;
+
+  const bubble = document.createElement("div");
+  bubble.className = "semai-chat-bubble";
+
+  const body = document.createElement("div");
+  body.className = "semai-chat-body";
+  // Render plaintext with paragraph breaks; preserve single newlines as <br>
+  const paragraphs = String(draftText || "").split(/\n{2,}/);
+  for (const para of paragraphs) {
+    const p = document.createElement("p");
+    const parts = para.split("\n");
+    parts.forEach((part, idx) => {
+      if (idx > 0) p.appendChild(document.createElement("br"));
+      p.appendChild(document.createTextNode(part));
+    });
+    body.appendChild(p);
+  }
+  bubble.appendChild(body);
+
+  const meta = document.createElement("div");
+  meta.className = "semai-chat-bubble-status";
+  meta.dataset.state = "sending";
+  meta.textContent = "Sending…";
+  bubble.appendChild(meta);
+
+  // Me-rows render as: bubble, then avatar (mirrors the existing renderer
+  // at semaiBuildChatView).
+  row.appendChild(bubble);
+  row.appendChild(avatar);
+
+  const spacer = chatScroll.querySelector(".semai-chat-end-spacer");
+  if (spacer) {
+    chatScroll.insertBefore(row, spacer);
+  } else {
+    chatScroll.appendChild(row);
+  }
+
+  // Scroll to the very bottom of the chat scroll so the new bubble lands
+  // visibly above the composer. A double-rAF lets layout settle (the new
+  // row's height has to be measured before scrollHeight is right).
+  window.requestAnimationFrame(() => {
+    window.requestAnimationFrame(() => {
+      try {
+        chatScroll.scrollTo({ top: chatScroll.scrollHeight, behavior: "smooth" });
+      } catch (_) {
+        chatScroll.scrollTop = chatScroll.scrollHeight;
+      }
+    });
+  });
+
+  return {
+    row,
+    setSent() {
+      meta.dataset.state = "sent";
+      meta.textContent = "Sent ✓";
+    },
+    setFailed(message) {
+      meta.dataset.state = "failed";
+      meta.textContent = message || "Failed to send";
+    },
+    remove() {
+      row.remove();
+    }
+  };
+}
+
 async function semaiSendReplyAllFromChat() {
   const input = document.getElementById("semai-chat-reply-input");
   const draftBtn = document.getElementById("semai-chat-reply-draft-btn");
@@ -1466,6 +1558,11 @@ async function semaiSendReplyAllFromChat() {
   if (draftBtn) draftBtn.disabled = true;
   if (sendBtn) sendBtn.disabled = true;
   if (status) status.textContent = "Sending Reply all…";
+
+  // Drop a local me-bubble into the chat thread immediately so the user
+  // sees their reply land as a chat message. This is the primary "your
+  // message went out" signal — the status line below is secondary.
+  const optimistic = semaiAppendOptimisticChatBubble(draft);
 
   try {
     // Attempt REST API path first — sends immediately without ever opening the
@@ -1491,8 +1588,12 @@ async function semaiSendReplyAllFromChat() {
 
     if (status) status.textContent = "Reply all sent.";
     if (input) input.value = "";
+    optimistic?.setSent();
   } catch (err) {
     if (status) status.textContent = err.message;
+    // Remove the optimistic bubble on failure — the input retains the draft
+    // so the user can retry without seeing a stale "Failed" bubble pile up.
+    optimistic?.remove();
   } finally {
     if (draftBtn) draftBtn.disabled = false;
     if (sendBtn) sendBtn.disabled = false;
